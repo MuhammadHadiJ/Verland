@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Real Estate Reality</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Pakistan MVP</p>
+        <h1>Real Estate Reality</h1>
+      </div>
+    </header>
+
+    <main class="shell">
+      <aside class="sidebar" aria-label="Property discovery">
+        <form class="search-panel" id="searchForm">
+          <label>
+            Search
+            <input id="searchInput" name="q" type="search" placeholder="Property, area, or street">
+          </label>
+          <label>
+            City
+            <select id="cityInput" name="city">
+              <option value="">All Pakistan</option>
+              <option value="Karachi">Karachi</option>
+              <option value="Lahore">Lahore</option>
+              <option value="Islamabad">Islamabad</option>
+              <option value="Rawalpindi">Rawalpindi</option>
+              <option value="Faisalabad">Faisalabad</option>
+              <option value="Peshawar">Peshawar</option>
+              <option value="Quetta">Quetta</option>
+              <option value="Multan">Multan</option>
+            </select>
+          </label>
+          <button class="secondary-button" type="submit">Filter</button>
+        </form>
+
+        <section class="map-panel" id="mapPanel" aria-label="Map discovery">
+          <div class="map-grid" id="fallbackMap"></div>
+          <div id="googleMap"></div>
+          <span class="pin selected-pin" id="selectedPin" hidden></span>
+          <div class="map-status" id="mapStatus">Click the map to find or add reviews at that location.</div>
+        </section>
+
+        <section>
+          <div class="section-title">
+            <h2>Properties</h2>
+            <span id="propertyCount">0</span>
+          </div>
+          <div class="property-list" id="propertyList"></div>
+        </section>
+      </aside>
+
+      <section class="detail-panel" id="detailPanel" aria-live="polite">
+        <div class="empty-state">
+          <h2>No property selected</h2>
+          <p>Click the exact real estate on the map to see accounts tied to that property.</p>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="propertyDialog">
+      <form method="dialog" class="dialog-card" id="propertyForm">
+        <div class="dialog-header">
+          <h2>Add property</h2>
+          <button class="icon-button" value="cancel" type="submit" aria-label="Close">×</button>
+        </div>
+        <div class="form-grid">
+          <label>
+            Name
+            <input name="name" required placeholder="Building, house, plaza, or dropped pin label">
+          </label>
+          <label>
+            Type
+            <select name="property_type" required>
+              <option value="apartment">Apartment</option>
+              <option value="house">House</option>
+              <option value="plot">Plot</option>
+              <option value="commercial">Commercial</option>
+            </select>
+          </label>
+          <label class="wide">
+            Address
+            <input name="address" required placeholder="Street, block, sector, or map-derived address">
+          </label>
+          <label>
+            Area
+            <input name="area" required placeholder="DHA Phase 6, Gulberg, G-11">
+          </label>
+          <label>
+            City
+            <input name="city" required placeholder="Karachi">
+          </label>
+          <label>
+            Latitude
+            <input name="latitude" type="number" step="any" readonly>
+          </label>
+          <label>
+            Longitude
+            <input name="longitude" type="number" step="any" readonly>
+          </label>
+          <input name="google_place_id" type="hidden">
+        </div>
+        <p class="form-error" id="propertyError"></p>
+        <button class="primary-button" type="submit">Create property at map point</button>
+      </form>
+    </dialog>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,1 +1,4 @@
 Project Overview.txt
+.env
+*.sqlite3
+__pycache__/
