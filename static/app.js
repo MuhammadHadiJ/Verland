@@ -267,42 +267,30 @@ function renderDetail() {
       <div class="meta-row">
         <span class="pill">${escapeHtml(property.property_type)}</span>
         <span class="pill">${escapeHtml(property.area)}, ${escapeHtml(property.city)}</span>
-        <span class="pill">${property.review_count} structured responses</span>
+        <span class="pill">${property.review_count} individual ${property.review_count === 1 ? 'account' : 'accounts'}</span>
       </div>
       <h2>${escapeHtml(property.name)}</h2>
       <p>${escapeHtml(property.address)}</p>
       <div class="property-actions">
-        <button class="primary-button" id="openReviewButton">Add account</button>
+        <button class="primary-button" id="openReviewButton">Add your review</button>
       </div>
     </section>
 
-    <div class="insight-strip">
-        ${metric("Utilities", averageFor(property, ["electricity", "water", "gas"]))}
-        ${metric("Building", averageFor(property, ["maintenance", "elevator", "structure", "seepage"]), true)}
-        ${metric("Connectivity", averageFor(property, ["internet", "mobile_signal"]))}
-        ${metric("Shared Area", sharedObservationSummary(property))}
-    </div>
-
-    <div class="content-grid">
+    <div class="content-grid full-width">
       <section class="panel">
-        <h2>Response patterns</h2>
-        ${categories.map(([name, categoryFields]) => renderCategory(property, name, categoryFields)).join("")}
-      </section>
-
-      <section class="panel">
-        <h2>Cost notes and comments</h2>
+        <h2>Ground Truth Accounts</h2>
         <div class="comments-list">
           ${renderComments(property)}
         </div>
       </section>
-    </div>
 
-    <section class="panel comments-panel">
-      <h2>Nearby shared observations</h2>
-      <div class="comments-list">
-        ${renderAreaObservations(property)}
-      </div>
-    </section>
+      <section class="panel">
+        <h2>Nearby shared observations</h2>
+        <div class="comments-list">
+          ${renderAreaObservations(property)}
+        </div>
+      </section>
+    </div>
   `;
 
   document.querySelector("#openReviewButton").addEventListener("click", () => openReviewPopup(property.id));
@@ -399,77 +387,6 @@ function renderMapEmptyState() {
   `;
 }
 
-function metric(label, value, isBinary = false) {
-  let display = "No data";
-  if (value) {
-    if (isBinary) {
-      display = value >= 3.5 ? "Good" : (value >= 2.5 ? "Fair" : "Poor");
-    } else {
-      display = `${value}/5`;
-    }
-  }
-  return `
-    <div class="metric">
-      <span>${label}</span>
-      <strong>${display}</strong>
-    </div>
-  `;
-}
-
-function averageFor(property, selectedFields) {
-  const values = selectedFields
-    .map((field) => property.averages[field])
-    .filter((value) => typeof value === "number");
-  if (!values.length) return null;
-  return (values.reduce((total, value) => total + value, 0) / values.length).toFixed(1);
-}
-
-function sharedObservationSummary(property) {
-  const observations = property.area_observations || [];
-  if (!observations.length) return null;
-  const total = observations.reduce((sum, observation) => sum + Number(observation.severity || 0), 0);
-  return (total / observations.length).toFixed(1);
-}
-
-function renderCategory(property, name, categoryFields) {
-  return `
-    <div class="category">
-      <h3>${name}</h3>
-      ${categoryFields
-        .map((field) => {
-          const average = property.averages[field];
-          const isBinary = binaryFields.includes(field);
-
-          let visual = renderBar(average);
-          let label = average ? average.toFixed(1) : "-";
-
-          if (isBinary && average) {
-            const percent = Math.round(((average - 1) / 4) * 100);
-            visual = `<div class="status-pill ${average >= 3.5 ? 'good' : 'poor'}">${percent}% Positive</div>`;
-            label = "";
-          }
-
-          return `
-            <div class="score-row">
-              <span>${labelByField[field]}</span>
-              ${visual}
-              <strong>${label}</strong>
-            </div>
-          `;
-        })
-        .join("")}
-    </div>
-  `;
-}
-
-function renderBar(average) {
-  const active = average ? Math.round(average) : 0;
-  return `
-    <div class="bar" aria-hidden="true">
-      ${[1, 2, 3, 4, 5].map((step) => `<span data-active="${step <= active}"></span>`).join("")}
-    </div>
-  `;
-}
 
 function renderReviewForm(propertyId) {
   return `
@@ -562,24 +479,52 @@ function scale(field, label) {
 
 function renderComments(property) {
   if (!property.comments.length) {
-    return `<p class="empty-copy">No cost notes or comments yet.</p>`;
+    return `<p class="empty-copy">No reviews yet for this property.</p>`;
   }
 
   return property.comments
     .map(
       (comment) => `
         <article class="comment">
-          <strong>${escapeHtml(comment.contributor_role)}</strong>
-          <div class="meta-row">
-            ${comment.lived_period ? `<span>${escapeHtml(comment.lived_period)}</span>` : ""}
-            ${comment.rent_range ? `<span>Rent: ${escapeHtml(comment.rent_range)}</span>` : ""}
-            ${comment.hidden_costs ? `<span>Costs: ${escapeHtml(comment.hidden_costs)}</span>` : ""}
+          <div class="comment-header">
+            <strong>${escapeHtml(comment.contributor_role)}</strong>
+            <span class="comment-date">${new Date(comment.created_at).toLocaleDateString()}</span>
           </div>
-          ${comment.comment ? `<p>${escapeHtml(comment.comment)}</p>` : ""}
+          <div class="meta-row">
+            ${comment.lived_period ? `<span>Period: ${escapeHtml(comment.lived_period)}</span>` : ""}
+            ${comment.rent_range ? `<span>Rent: ${escapeHtml(comment.rent_range)}</span>` : ""}
+            ${comment.hidden_costs ? `<span>Hidden Costs: ${escapeHtml(comment.hidden_costs)}</span>` : ""}
+          </div>
+
+          <div class="comment-scores-grid">
+            ${categories.map(([catName, fields]) => `
+              <div class="comment-cat">
+                <h4>${catName}</h4>
+                <div class="scores-list">
+                  ${fields.map(f => `
+                    <div class="score-line">
+                      <span>${labelByField[f]}</span>
+                      <strong>${formatScore(f, comment.scores[f])}</strong>
+                    </div>
+                  `).join("")}
+                </div>
+              </div>
+            `).join("")}
+          </div>
+
+          ${comment.comment ? `<p class="comment-text">"${escapeHtml(comment.comment)}"</p>` : ""}
         </article>
       `
     )
     .join("");
+}
+
+function formatScore(field, value) {
+  if (binaryFields.includes(field)) {
+    if (field === "elevator") return value === 5 ? "Elevator" : "Stairs";
+    return value >= 5 ? "Good" : "Poor";
+  }
+  return `${value}/5`;
 }
 
 function renderAreaObservations(property) {

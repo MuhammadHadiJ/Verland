@@ -329,87 +329,11 @@ def property_summary(conn, property_row):
         )
         area_observations = cur.fetchall()
 
-    distributions = {}
-    averages = {}
-    for api_field, db_field in REVIEW_DB_FIELDS.items():
-        buckets = {str(score): 0 for score in range(1, 6)}
-        total = 0
-        for review in reviews:
-            score = review[db_field]
-            buckets[str(score)] += 1
-            total += score
-        distributions[api_field] = buckets
-        averages[api_field] = round(total / len(reviews), 2) if reviews else None
-
     property_data.pop("location", None)
     if "distance_m" in property_data and property_data["distance_m"] is not None:
         property_data["distance_km"] = round(float(property_data.pop("distance_m")) / 1000, 3)
 
-    # Aggregate shared fields from nearby reviews and area observations
-    # We use a 500m radius for shared environmental patterns
-    shared_fields_map = {
-        "noise": "noise",
-        "security": "street_security",
-        "cleanliness": "cleanliness",
-        "road_access": "road_access",
-    }
-
-    all_nearby_values = {field: [] for field in shared_fields_map}
-
-    # 1. Include current property reviews
-    for review in reviews:
-        for field in shared_fields_map:
-            if review[field] is not None:
-                all_nearby_values[field].append(review[field])
-
-    with conn.cursor() as cur:
-        # 2. Fetch nearby property reviews (excluding the current property)
-        cur.execute(
-            """
-            select r.noise, r.security, r.cleanliness, r.road_access
-            from public.property_reviews r
-            join public.properties p on r.property_id = p.id
-            where st_dwithin(p.location, st_setsrid(st_makepoint(%s, %s), 4326)::geography, 500)
-              and r.property_id != %s
-              and r.visibility = 'public'
-              and r.moderation_status = 'active'
-            """,
-            (property_data["longitude"], property_data["latitude"], property_id),
-        )
-        for row in cur.fetchall():
-            for field in shared_fields_map:
-                if row[field] is not None:
-                    all_nearby_values[field].append(row[field])
-
-        # 3. Fetch nearby area observations
-        cur.execute(
-            """
-            select observation_kind, severity
-            from public.area_observations
-            where moderation_status = 'active'
-              and st_dwithin(location, st_setsrid(st_makepoint(%s, %s), 4326)::geography, 500)
-            """,
-            (property_data["longitude"], property_data["latitude"]),
-        )
-        # Reverse map for observations
-        obs_to_field = {v: k for k, v in shared_fields_map.items()}
-        for row in cur.fetchall():
-            field = obs_to_field.get(row["observation_kind"])
-            if field:
-                all_nearby_values[field].append(row["severity"])
-
-    # Calculate final stats for shared fields
-    for field, values in all_nearby_values.items():
-        if values:
-            averages[field] = round(sum(values) / len(values), 2)
-            buckets = {str(score): 0 for score in range(1, 6)}
-            for v in values:
-                buckets[str(v)] += 1
-            distributions[field] = buckets
-
     property_data["review_count"] = len(reviews)
-    property_data["averages"] = averages
-    property_data["distributions"] = distributions
     property_data["area_observations"] = [row_to_dict(row) for row in area_observations]
     property_data["comments"] = [
         {
@@ -420,10 +344,10 @@ def property_summary(conn, property_row):
             "hidden_costs": review["hidden_costs"],
             "comment": review["comment"],
             "created_at": json_value(review["created_at"]),
+            "scores": {api_field: review[db_field] for api_field, db_field in REVIEW_DB_FIELDS.items()}
         }
         for review in reviews
-        if review["comment"] or review["hidden_costs"] or review["rent_range"]
-    ][:12]
+    ]
     return property_data
 
 
