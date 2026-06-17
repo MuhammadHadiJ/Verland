@@ -11,16 +11,14 @@ const fields = [
   ["noise", "Street noise"],
   ["security", "Area security"],
   ["cleanliness", "Cleanliness"],
-  ["air_quality", "Air quality"],
   ["road_access", "Road accessibility"],
-  ["transport", "Transport availability"],
 ];
 
 const categories = [
   ["Property Utilities", ["electricity", "water", "gas"]],
   ["Building Quality", ["maintenance", "elevator", "structure", "seepage"]],
   ["Property Connectivity", ["internet", "mobile_signal"]],
-  ["Shared Environment", ["noise", "security", "cleanliness", "air_quality", "road_access", "transport"]],
+  ["Shared Environment", ["noise", "security", "cleanliness", "road_access"]],
 ];
 
 const labelByField = Object.fromEntries(fields);

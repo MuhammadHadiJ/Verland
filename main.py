@@ -28,9 +28,7 @@ REVIEW_FIELDS = [
     "noise",
     "security",
     "cleanliness",
-    "air_quality",
     "road_access",
-    "transport",
 ]
 
 REVIEW_DB_FIELDS = {
@@ -46,9 +44,7 @@ REVIEW_DB_FIELDS = {
     "noise": "noise",
     "security": "security",
     "cleanliness": "cleanliness",
-    "air_quality": "air_quality",
     "road_access": "road_access",
-    "transport": "transport",
 }
 
 PROPERTY_TYPES = {"apartment", "house", "plot", "commercial"}
@@ -348,9 +344,7 @@ def property_summary(conn, property_row):
         "noise": "noise",
         "security": "street_security",
         "cleanliness": "cleanliness",
-        "air_quality": "air_quality",
         "road_access": "road_access",
-        "transport": "transport",
     }
 
     all_nearby_values = {field: [] for field in shared_fields_map}
@@ -365,7 +359,7 @@ def property_summary(conn, property_row):
         # 2. Fetch nearby property reviews (excluding the current property)
         cur.execute(
             """
-            select r.noise, r.security, r.cleanliness, r.air_quality, r.road_access, r.transport
+            select r.noise, r.security, r.cleanliness, r.road_access
             from public.property_reviews r
             join public.properties p on r.property_id = p.id
             where st_dwithin(p.location, st_setsrid(st_makepoint(%s, %s), 4326)::geography, 500)
@@ -647,9 +641,9 @@ class AppHandler(SimpleHTTPRequestHandler):
                       hidden_costs, comment, electricity, water, gas,
                       building_maintenance, elevator, structure, seepage,
                       internet, mobile_signal, noise, security,
-                      cleanliness, air_quality, road_access, transport
+                      cleanliness, road_access
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         property_id,
@@ -670,9 +664,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                         data["noise"],
                         data["security"],
                         data["cleanliness"],
-                        data["air_quality"],
                         data["road_access"],
-                        data["transport"],
                     ),
                 )
             conn.commit()

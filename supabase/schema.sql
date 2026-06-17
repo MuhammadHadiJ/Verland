@@ -153,9 +153,7 @@ create table if not exists public.property_reviews (
   noise smallint not null check (noise between 1 and 5) default 3,
   security smallint not null check (security between 1 and 5) default 3,
   cleanliness smallint not null check (cleanliness between 1 and 5) default 3,
-  air_quality smallint not null check (air_quality between 1 and 5) default 3,
   road_access smallint not null check (road_access between 1 and 5) default 3,
-  transport smallint not null check (transport between 1 and 5) default 3,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
