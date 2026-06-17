@@ -35,9 +35,6 @@ const state = {
 const propertyList = document.querySelector("#propertyList");
 const propertyCount = document.querySelector("#propertyCount");
 const detailPanel = document.querySelector("#detailPanel");
-const propertyDialog = document.querySelector("#propertyDialog");
-const propertyForm = document.querySelector("#propertyForm");
-const propertyError = document.querySelector("#propertyError");
 const searchForm = document.querySelector("#searchForm");
 const searchInput = document.querySelector("#searchInput");
 const autocompleteDropdown = document.querySelector("#autocompleteDropdown");
@@ -116,28 +113,6 @@ mapPanel.addEventListener("click", (event) => {
   selectMapLocation({ lat, lng }, { x: event.clientX - rect.left, y: event.clientY - rect.top });
 });
 
-propertyForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const submitter = event.submitter;
-  if (submitter?.value === "cancel") {
-    propertyDialog.close();
-    return;
-  }
-
-  propertyError.textContent = "";
-  const payload = Object.fromEntries(new FormData(propertyForm).entries());
-  try {
-    const result = await api("/api/properties", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    propertyDialog.close();
-    state.selectedId = result.property.id;
-    await loadProperties();
-  } catch (error) {
-    propertyError.textContent = error.message;
-  }
-});
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -274,7 +249,10 @@ function renderDetail() {
   const property = state.properties.find((item) => item.id === state.selectedId);
   if (!property) {
     detailPanel.innerHTML = renderMapEmptyState();
-    bindCreatePropertyButton();
+    const form = detailPanel.querySelector("#reviewForm");
+    if (form) {
+      form.addEventListener("submit", (event) => handleReviewSubmit(event, null));
+    }
     return;
   }
 
@@ -323,25 +301,44 @@ function renderDetail() {
   `;
 
   const form = detailPanel.querySelector("#reviewForm");
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const error = form.querySelector(".form-error");
-    error.textContent = "";
-    const payload = Object.fromEntries(new FormData(form).entries());
-    try {
-      const result = await api(`/api/properties/${property.id}/reviews`, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
+  form.addEventListener("submit", (event) => handleReviewSubmit(event, property.id));
+}
+
+async function handleReviewSubmit(event, propertyId) {
+  event.preventDefault();
+  const form = event.target;
+  const error = form.querySelector(".form-error");
+  error.textContent = "";
+  const payload = Object.fromEntries(new FormData(form).entries());
+
+  if (!propertyId) {
+    // Inject selected location metadata for automatic property creation
+    payload.location = state.selectedLocation;
+    if (state.selectedPlace) {
+      payload.place = state.selectedPlace;
+    }
+  }
+
+  try {
+    const url = propertyId ? `/api/properties/${propertyId}/reviews` : "/api/properties/new/reviews";
+    const result = await api(url, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    if (!propertyId) {
+      state.selectedId = result.property.id;
+      await loadProperties();
+    } else {
       state.properties = state.properties.map((item) =>
-        item.id === property.id ? result.property : item
+        item.id === propertyId ? result.property : item
       );
       renderList();
       renderDetail();
-    } catch (apiError) {
-      error.textContent = apiError.message;
     }
-  });
+  } catch (apiError) {
+    error.textContent = apiError.message;
+  }
 }
 
 function renderMapEmptyState() {
@@ -355,41 +352,26 @@ function renderMapEmptyState() {
   }
 
   return `
-    <div class="empty-state">
-      <h2>No property selected</h2>
-      <p>No existing property matched this point. Create the property here, then submit the first structured account.</p>
-      <button class="primary-button" id="createPropertyButton" type="button">Create property here</button>
+    <section class="property-hero">
+      <div class="meta-row">
+        <span class="pill">New location</span>
+      </div>
+      <h2>${state.selectedPlace ? escapeHtml(state.selectedPlace.name) : "Selected Location"}</h2>
+      <p>${state.selectedPlace ? escapeHtml(state.selectedPlace.display_name) : `${state.selectedLocation.lat}, ${state.selectedLocation.lng}`}</p>
+    </section>
+
+    <div class="content-grid">
+      <section class="panel">
+        <h2>No accounts yet</h2>
+        <p class="empty-copy">Be the first to add an account for this property.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Submit first structured review</h2>
+        ${renderReviewForm(null)}
+      </section>
     </div>
   `;
-}
-
-function bindCreatePropertyButton() {
-  const button = document.querySelector("#createPropertyButton");
-  if (!button) return;
-  button.addEventListener("click", () => {
-    propertyError.textContent = "";
-    propertyForm.reset();
-
-    const readOnlyFields = ["propName", "propAddress", "propArea", "propCity"];
-    if (state.selectedPlace) {
-      propertyForm.elements.name.value = state.selectedPlace.name;
-      propertyForm.elements.address.value = state.selectedPlace.address;
-      propertyForm.elements.area.value = state.selectedPlace.area;
-      propertyForm.elements.city.value = state.selectedPlace.city;
-      propertyForm.elements.external_provider.value = state.selectedPlace.provider;
-      propertyForm.elements.external_place_id.value = state.selectedPlace.place_id;
-      propertyForm.elements.external_display_name.value = state.selectedPlace.display_name;
-
-      readOnlyFields.forEach(id => document.getElementById(id).readOnly = true);
-    } else {
-      propertyForm.elements.address.value = `${state.selectedLocation.lat}, ${state.selectedLocation.lng}`;
-      readOnlyFields.forEach(id => document.getElementById(id).readOnly = false);
-    }
-
-    propertyForm.elements.latitude.value = state.selectedLocation.lat;
-    propertyForm.elements.longitude.value = state.selectedLocation.lng;
-    propertyDialog.showModal();
-  });
 }
 
 function metric(label, value) {

@@ -483,13 +483,17 @@ class AppHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
-        if path == "/api/properties":
-            self.handle_create_property()
+        if path == "/api/properties/new/reviews":
+            self.handle_create_review(None)
             return
 
         if path.startswith("/api/properties/") and path.endswith("/reviews"):
             parts = path.split("/")
             self.handle_create_review(parts[3])
+            return
+
+        if path == "/api/properties":
+            self.handle_create_property()
             return
 
         self.send_error_json("Not found", HTTPStatus.NOT_FOUND)
@@ -630,18 +634,94 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def handle_create_review(self, property_id):
         try:
-            data = validate_review(parse_body(self))
+            body = parse_body(self)
+            data = validate_review(body)
         except ValueError as exc:
             self.send_error_json(str(exc))
             return
 
         with connect() as conn:
             with conn.cursor() as cur:
-                cur.execute("select * from public.properties where id = %s", (property_id,))
-                property_row = cur.fetchone()
-                if property_row is None:
-                    self.send_error_json("Property not found", HTTPStatus.NOT_FOUND)
-                    return
+                if not property_id:
+                    # Automatic property creation
+                    location = body.get("location")
+                    if not location:
+                        self.send_error_json("location is required for new properties")
+                        return
+
+                    place = body.get("place") or {}
+                    lat = float(location["lat"])
+                    lng = float(location["lng"])
+                    existing = None
+
+                    # 1. Match by external provider ID if available
+                    if place.get("place_id"):
+                        cur.execute(
+                            """
+                            select * from public.properties
+                            where external_provider = %s and external_place_id = %s
+                            limit 1
+                            """,
+                            (place.get("provider", "manual"), str(place["place_id"])),
+                        )
+                        existing = cur.fetchone()
+
+                    # 2. Fallback: Check for existing property within 20m to avoid duplicates
+                    if not existing:
+                        cur.execute(
+                            """
+                            select * from public.properties
+                            where st_dwithin(location, st_setsrid(st_makepoint(%s, %s), 4326)::geography, 20)
+                            order by st_distance(location, st_setsrid(st_makepoint(%s, %s), 4326)::geography) asc
+                            limit 1
+                            """,
+                            (lng, lat, lng, lat),
+                        )
+                        existing = cur.fetchone()
+                    if existing:
+                        property_id = str(existing["id"])
+                        property_row = existing
+                    else:
+                        # Create new property
+                        name = place.get("name") or "New Property"
+                        address = place.get("address") or f"{lat}, {lng}"
+                        area = place.get("area") or ""
+                        city = place.get("city") or ""
+
+                        cur.execute(
+                            """
+                            insert into public.properties
+                            (
+                              name, property_type, address, area, city, country,
+                              latitude, longitude, external_provider, external_place_id,
+                              external_display_name, map_provider, external_payload
+                            )
+                            values (%s, %s, %s, %s, %s, 'Pakistan', %s, %s, %s, %s, %s, %s, %s)
+                            returning *
+                            """,
+                            (
+                                name,
+                                "house", # Default for new auto-created
+                                address,
+                                area,
+                                city,
+                                lat,
+                                lng,
+                                place.get("provider", "manual"),
+                                place.get("place_id"),
+                                place.get("display_name"),
+                                "locationiq",
+                                json.dumps(place.get("raw") or {}),
+                            ),
+                        )
+                        property_row = cur.fetchone()
+                        property_id = str(property_row["id"])
+                else:
+                    cur.execute("select * from public.properties where id = %s", (property_id,))
+                    property_row = cur.fetchone()
+                    if property_row is None:
+                        self.send_error_json("Property not found", HTTPStatus.NOT_FOUND)
+                        return
 
                 cur.execute(
                     """

@@ -65,55 +65,6 @@
       </section>
     </main>
 
-    <dialog id="propertyDialog">
-      <form method="dialog" class="dialog-card" id="propertyForm">
-        <div class="dialog-header">
-          <h2>Add property</h2>
-          <button class="icon-button" value="cancel" type="submit" aria-label="Close">×</button>
-        </div>
-        <div class="form-grid">
-          <label>
-            Name
-            <input id="propName" name="name" required placeholder="Building, house, plaza, or dropped pin label">
-          </label>
-          <label>
-            Type
-            <select name="property_type" required>
-              <option value="apartment">Apartment</option>
-              <option value="house">House</option>
-              <option value="plot">Plot</option>
-              <option value="commercial">Commercial</option>
-            </select>
-          </label>
-          <label class="wide">
-            Address
-            <input id="propAddress" name="address" required placeholder="Street, block, sector, or map-derived address">
-          </label>
-          <label>
-            Area
-            <input id="propArea" name="area" required placeholder="DHA Phase 6, Gulberg, G-11">
-          </label>
-          <label>
-            City
-            <input id="propCity" name="city" required placeholder="Karachi">
-          </label>
-          <label>
-            Latitude
-            <input name="latitude" type="number" step="any" readonly>
-          </label>
-          <label>
-            Longitude
-            <input name="longitude" type="number" step="any" readonly>
-          </label>
-          <input name="google_place_id" type="hidden">
-          <input name="external_provider" type="hidden">
-          <input name="external_place_id" type="hidden">
-          <input name="external_display_name" type="hidden">
-        </div>
-        <p class="form-error" id="propertyError"></p>
-        <button class="primary-button" type="submit">Create property at map point</button>
-      </form>
-    </dialog>
 
     <script src="/app.js"></script>
   </body>
