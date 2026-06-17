@@ -8,12 +8,19 @@ const fields = [
   ["seepage", "Drainage/seepage"],
   ["internet", "Internet quality"],
   ["mobile_signal", "Mobile signal"],
+  ["noise", "Street noise"],
+  ["security", "Area security"],
+  ["cleanliness", "Cleanliness"],
+  ["air_quality", "Air quality"],
+  ["road_access", "Road accessibility"],
+  ["transport", "Transport availability"],
 ];
 
 const categories = [
   ["Property Utilities", ["electricity", "water", "gas"]],
   ["Building Quality", ["maintenance", "elevator", "structure", "seepage"]],
   ["Property Connectivity", ["internet", "mobile_signal"]],
+  ["Shared Environment", ["noise", "security", "cleanliness", "air_quality", "road_access", "transport"]],
 ];
 
 const labelByField = Object.fromEntries(fields);
@@ -22,6 +29,7 @@ const state = {
   properties: [],
   selectedId: null,
   selectedLocation: null,
+  selectedPlace: null,
   googleMap: null,
   googleMarker: null,
 };
@@ -33,13 +41,71 @@ const propertyDialog = document.querySelector("#propertyDialog");
 const propertyForm = document.querySelector("#propertyForm");
 const propertyError = document.querySelector("#propertyError");
 const searchForm = document.querySelector("#searchForm");
+const searchInput = document.querySelector("#searchInput");
+const autocompleteDropdown = document.querySelector("#autocompleteDropdown");
 const mapPanel = document.querySelector("#mapPanel");
 const selectedPin = document.querySelector("#selectedPin");
 const mapStatus = document.querySelector("#mapStatus");
 
 searchForm.addEventListener("submit", (event) => {
   event.preventDefault();
+  autocompleteDropdown.hidden = true;
   loadProperties();
+});
+
+let debounceTimer;
+searchInput.addEventListener("input", () => {
+  clearTimeout(debounceTimer);
+  const query = searchInput.value.trim();
+  if (query.length < 3) {
+    autocompleteDropdown.hidden = true;
+    return;
+  }
+
+  debounceTimer = setTimeout(async () => {
+    try {
+      const result = await api(`/api/location-search?q=${encodeURIComponent(query)}`);
+      renderAutocomplete(result.places);
+    } catch (error) {
+      console.error("Autocomplete error:", error);
+    }
+  }, 300);
+});
+
+function renderAutocomplete(places) {
+  if (!places.length) {
+    autocompleteDropdown.hidden = true;
+    return;
+  }
+
+  autocompleteDropdown.innerHTML = "";
+  autocompleteDropdown.hidden = false;
+
+  for (const place of places) {
+    const item = document.createElement("button");
+    item.className = "autocomplete-item";
+    item.type = "button";
+    item.innerHTML = `
+      <strong>${escapeHtml(place.name)}</strong>
+      <span>${escapeHtml(place.display_name)}</span>
+    `;
+    item.addEventListener("click", () => {
+      searchInput.value = place.display_name;
+      autocompleteDropdown.hidden = true;
+      state.selectedPlace = place;
+      selectMapLocation({ lat: place.lat, lng: place.lng });
+      if (state.googleMap) {
+        state.googleMap.setZoom(18);
+      }
+    });
+    autocompleteDropdown.append(item);
+  }
+}
+
+document.addEventListener("click", (event) => {
+  if (!searchForm.contains(event.target)) {
+    autocompleteDropdown.hidden = true;
+  }
 });
 
 mapPanel.addEventListener("click", (event) => {
@@ -125,6 +191,9 @@ async function selectMapLocation(location, fallbackPoint = null) {
     lat: Number(location.lat.toFixed(6)),
     lng: Number(location.lng.toFixed(6)),
   };
+  if (!state.selectedPlace || state.selectedPlace.lat !== state.selectedLocation.lat || state.selectedPlace.lng !== state.selectedLocation.lng) {
+    state.selectedPlace = null;
+  }
   state.selectedId = null;
   mapStatus.textContent = `${state.selectedLocation.lat}, ${state.selectedLocation.lng}`;
   moveSelectedPin(fallbackPoint);
@@ -302,9 +371,25 @@ function bindCreatePropertyButton() {
   button.addEventListener("click", () => {
     propertyError.textContent = "";
     propertyForm.reset();
+
+    const readOnlyFields = ["propName", "propAddress", "propArea", "propCity"];
+    if (state.selectedPlace) {
+      propertyForm.elements.name.value = state.selectedPlace.name;
+      propertyForm.elements.address.value = state.selectedPlace.address;
+      propertyForm.elements.area.value = state.selectedPlace.area;
+      propertyForm.elements.city.value = state.selectedPlace.city;
+      propertyForm.elements.external_provider.value = state.selectedPlace.provider;
+      propertyForm.elements.external_place_id.value = state.selectedPlace.place_id;
+      propertyForm.elements.external_display_name.value = state.selectedPlace.display_name;
+
+      readOnlyFields.forEach(id => document.getElementById(id).readOnly = true);
+    } else {
+      propertyForm.elements.address.value = `${state.selectedLocation.lat}, ${state.selectedLocation.lng}`;
+      readOnlyFields.forEach(id => document.getElementById(id).readOnly = false);
+    }
+
     propertyForm.elements.latitude.value = state.selectedLocation.lat;
     propertyForm.elements.longitude.value = state.selectedLocation.lng;
-    propertyForm.elements.address.value = `${state.selectedLocation.lat}, ${state.selectedLocation.lng}`;
     propertyDialog.showModal();
   });
 }

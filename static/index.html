@@ -16,11 +16,14 @@
 
     <main class="shell">
       <aside class="sidebar" aria-label="Property discovery">
-        <form class="search-panel" id="searchForm">
-          <label>
-            Search
-            <input id="searchInput" name="q" type="search" placeholder="Property, area, or street">
-          </label>
+        <form class="search-panel" id="searchForm" autocomplete="off">
+          <div class="autocomplete-container">
+            <label>
+              Search
+              <input id="searchInput" name="q" type="search" placeholder="Property, area, or street">
+            </label>
+            <div id="autocompleteDropdown" class="autocomplete-dropdown" hidden></div>
+          </div>
           <label>
             City
             <select id="cityInput" name="city">
@@ -71,7 +74,7 @@
         <div class="form-grid">
           <label>
             Name
-            <input name="name" required placeholder="Building, house, plaza, or dropped pin label">
+            <input id="propName" name="name" required placeholder="Building, house, plaza, or dropped pin label">
           </label>
           <label>
             Type
@@ -84,15 +87,15 @@
           </label>
           <label class="wide">
             Address
-            <input name="address" required placeholder="Street, block, sector, or map-derived address">
+            <input id="propAddress" name="address" required placeholder="Street, block, sector, or map-derived address">
           </label>
           <label>
             Area
-            <input name="area" required placeholder="DHA Phase 6, Gulberg, G-11">
+            <input id="propArea" name="area" required placeholder="DHA Phase 6, Gulberg, G-11">
           </label>
           <label>
             City
-            <input name="city" required placeholder="Karachi">
+            <input id="propCity" name="city" required placeholder="Karachi">
           </label>
           <label>
             Latitude
@@ -103,6 +106,9 @@
             <input name="longitude" type="number" step="any" readonly>
           </label>
           <input name="google_place_id" type="hidden">
+          <input name="external_provider" type="hidden">
+          <input name="external_place_id" type="hidden">
+          <input name="external_display_name" type="hidden">
         </div>
         <p class="form-error" id="propertyError"></p>
         <button class="primary-button" type="submit">Create property at map point</button>

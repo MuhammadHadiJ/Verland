@@ -86,6 +86,57 @@ p {
   gap: 14px;
 }
 
+.autocomplete-container {
+  position: relative;
+}
+
+.autocomplete-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  border: 1px solid var(--line);
+  border-radius: 0 0 8px 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.autocomplete-item {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  padding: 10px 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.autocomplete-item:last-child {
+  border-bottom: 0;
+}
+
+.autocomplete-item:hover,
+.autocomplete-item:focus {
+  background: #f7faf7;
+  outline: none;
+}
+
+.autocomplete-item strong {
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+
+.autocomplete-item span {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
 label {
   display: grid;
   gap: 7px;

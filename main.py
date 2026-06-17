@@ -25,6 +25,12 @@ REVIEW_FIELDS = [
     "seepage",
     "internet",
     "mobile_signal",
+    "noise",
+    "security",
+    "cleanliness",
+    "air_quality",
+    "road_access",
+    "transport",
 ]
 
 REVIEW_DB_FIELDS = {
@@ -37,6 +43,12 @@ REVIEW_DB_FIELDS = {
     "seepage": "seepage",
     "internet": "internet",
     "mobile_signal": "mobile_signal",
+    "noise": "noise",
+    "security": "security",
+    "cleanliness": "cleanliness",
+    "air_quality": "air_quality",
+    "road_access": "road_access",
+    "transport": "transport",
 }
 
 PROPERTY_TYPES = {"apartment", "house", "plot", "commercial"}
@@ -330,6 +342,70 @@ def property_summary(conn, property_row):
     if "distance_m" in property_data and property_data["distance_m"] is not None:
         property_data["distance_km"] = round(float(property_data.pop("distance_m")) / 1000, 3)
 
+    # Aggregate shared fields from nearby reviews and area observations
+    # We use a 500m radius for shared environmental patterns
+    shared_fields_map = {
+        "noise": "noise",
+        "security": "street_security",
+        "cleanliness": "cleanliness",
+        "air_quality": "air_quality",
+        "road_access": "road_access",
+        "transport": "transport",
+    }
+
+    all_nearby_values = {field: [] for field in shared_fields_map}
+
+    # 1. Include current property reviews
+    for review in reviews:
+        for field in shared_fields_map:
+            if review[field] is not None:
+                all_nearby_values[field].append(review[field])
+
+    with conn.cursor() as cur:
+        # 2. Fetch nearby property reviews (excluding the current property)
+        cur.execute(
+            """
+            select r.noise, r.security, r.cleanliness, r.air_quality, r.road_access, r.transport
+            from public.property_reviews r
+            join public.properties p on r.property_id = p.id
+            where st_dwithin(p.location, st_setsrid(st_makepoint(%s, %s), 4326)::geography, 500)
+              and r.property_id != %s
+              and r.visibility = 'public'
+              and r.moderation_status = 'active'
+            """,
+            (property_data["longitude"], property_data["latitude"], property_id),
+        )
+        for row in cur.fetchall():
+            for field in shared_fields_map:
+                if row[field] is not None:
+                    all_nearby_values[field].append(row[field])
+
+        # 3. Fetch nearby area observations
+        cur.execute(
+            """
+            select observation_kind, severity
+            from public.area_observations
+            where moderation_status = 'active'
+              and st_dwithin(location, st_setsrid(st_makepoint(%s, %s), 4326)::geography, 500)
+            """,
+            (property_data["longitude"], property_data["latitude"]),
+        )
+        # Reverse map for observations
+        obs_to_field = {v: k for k, v in shared_fields_map.items()}
+        for row in cur.fetchall():
+            field = obs_to_field.get(row["observation_kind"])
+            if field:
+                all_nearby_values[field].append(row["severity"])
+
+    # Calculate final stats for shared fields
+    for field, values in all_nearby_values.items():
+        if values:
+            averages[field] = round(sum(values) / len(values), 2)
+            buckets = {str(score): 0 for score in range(1, 6)}
+            for v in values:
+                buckets[str(v)] += 1
+            distributions[field] = buckets
+
     property_data["review_count"] = len(reviews)
     property_data["averages"] = averages
     property_data["distributions"] = distributions
@@ -457,8 +533,7 @@ class AppHandler(SimpleHTTPRequestHandler):
         where = []
         values = []
         if query:
-            where.append("(lower(name) like %s or lower(address) like %s or lower(area) like %s)")
-            where.append("lower(coalesce(external_display_name, '')) like %s")
+            where.append("(lower(name) like %s or lower(address) like %s or lower(area) like %s or lower(coalesce(external_display_name, '')) like %s)")
             values.extend([f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%"])
         if city:
             where.append("lower(city) = %s")
@@ -505,7 +580,9 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def handle_create_property(self):
         try:
-            data = validate_property(parse_body(self))
+            body = parse_body(self)
+            data = validate_property(body)
+            external_payload = body.get("external_payload")
         except ValueError as exc:
             self.send_error_json(str(exc))
             return
@@ -540,7 +617,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                         data["google_place_name"],
                         data["google_formatted_address"],
                         data["external_provider"],
-                        json.dumps(parse_body_cache(data)),
+                        json.dumps(external_payload) if external_payload else json.dumps(data),
                     ),
                 )
                 row = cur.fetchone()
@@ -569,9 +646,10 @@ class AppHandler(SimpleHTTPRequestHandler):
                       property_id, contributor_role, lived_period, rent_range,
                       hidden_costs, comment, electricity, water, gas,
                       building_maintenance, elevator, structure, seepage,
-                      internet, mobile_signal
+                      internet, mobile_signal, noise, security,
+                      cleanliness, air_quality, road_access, transport
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         property_id,
@@ -589,6 +667,12 @@ class AppHandler(SimpleHTTPRequestHandler):
                         data["seepage"],
                         data["internet"],
                         data["mobile_signal"],
+                        data["noise"],
+                        data["security"],
+                        data["cleanliness"],
+                        data["air_quality"],
+                        data["road_access"],
+                        data["transport"],
                     ),
                 )
             conn.commit()
