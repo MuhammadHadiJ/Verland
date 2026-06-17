@@ -9,17 +9,18 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      # This stops GitHub from throwing deprecation execution strictness fits
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Grab the code
         uses: actions/checkout@v4
 
       - name: Set up Supabase
-        uses: supabase/setup-cli@v2 # Updated to v2 for Node 24 support
+        uses: supabase/setup-cli@v2
         with:
           version: latest
 
       - name: Update Database
         run: |
-          supabase db execute --project-ref ${{ secrets.Supabase_Project_Ref }} --password ${{ secrets.Supabase_DB_Password }} --file ./supabase/schema.sql
+          supabase db query \
+            --db-url "postgresql://postgres.${{ secrets.Supabase_Project_Ref }}:${{ secrets.Supabase_DB_Password }}@aws-0-ap-south-1.pooler.supabase.com:6543/postgres" \
+            --file ./supabase/schema.sql
