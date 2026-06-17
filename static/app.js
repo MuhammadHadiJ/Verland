@@ -41,6 +41,11 @@ const autocompleteDropdown = document.querySelector("#autocompleteDropdown");
 const mapPanel = document.querySelector("#mapPanel");
 const selectedPin = document.querySelector("#selectedPin");
 const mapStatus = document.querySelector("#mapStatus");
+const reviewDialog = document.querySelector("#reviewDialog");
+const reviewFormContainer = document.querySelector("#reviewFormContainer");
+const closeReviewDialog = document.querySelector("#closeReviewDialog");
+
+closeReviewDialog.addEventListener("click", () => reviewDialog.close());
 
 searchForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -88,7 +93,7 @@ function renderAutocomplete(places) {
       searchInput.value = place.display_name;
       autocompleteDropdown.hidden = true;
       state.selectedPlace = place;
-      selectMapLocation({ lat: place.lat, lng: place.lng });
+      selectMapLocation({ lat: Number(place.lat), lng: Number(place.lon || place.lng) });
       if (state.googleMap) {
         state.googleMap.setZoom(18);
       }
@@ -161,8 +166,8 @@ function loadGoogleMaps(apiKey) {
 
 async function selectMapLocation(location, fallbackPoint = null) {
   state.selectedLocation = {
-    lat: Number(location.lat.toFixed(6)),
-    lng: Number(location.lng.toFixed(6)),
+    lat: Number(Number(location.lat).toFixed(6)),
+    lng: Number(Number(location.lng).toFixed(6)),
   };
   if (!state.selectedPlace || state.selectedPlace.lat !== state.selectedLocation.lat || state.selectedPlace.lng !== state.selectedLocation.lng) {
     state.selectedPlace = null;
@@ -249,9 +254,9 @@ function renderDetail() {
   const property = state.properties.find((item) => item.id === state.selectedId);
   if (!property) {
     detailPanel.innerHTML = renderMapEmptyState();
-    const form = detailPanel.querySelector("#reviewForm");
-    if (form) {
-      form.addEventListener("submit", (event) => handleReviewSubmit(event, null));
+    const btn = detailPanel.querySelector("#openReviewButton");
+    if (btn) {
+      btn.addEventListener("click", () => openReviewPopup(null));
     }
     return;
   }
@@ -265,13 +270,17 @@ function renderDetail() {
       </div>
       <h2>${escapeHtml(property.name)}</h2>
       <p>${escapeHtml(property.address)}</p>
-      <div class="insight-strip">
+      <div class="property-actions">
+        <button class="primary-button" id="openReviewButton">Add account</button>
+      </div>
+    </section>
+
+    <div class="insight-strip">
         ${metric("Utilities", averageFor(property, ["electricity", "water", "gas"]))}
         ${metric("Building", averageFor(property, ["maintenance", "elevator", "structure", "seepage"]))}
         ${metric("Connectivity", averageFor(property, ["internet", "mobile_signal"]))}
         ${metric("Shared Area", sharedObservationSummary(property))}
-      </div>
-    </section>
+    </div>
 
     <div class="content-grid">
       <section class="panel">
@@ -280,28 +289,45 @@ function renderDetail() {
       </section>
 
       <section class="panel">
-        <h2>Submit structured review</h2>
-        ${renderReviewForm(property.id)}
-      </section>
-    </div>
-
-      <section class="panel comments-panel">
         <h2>Cost notes and comments</h2>
         <div class="comments-list">
           ${renderComments(property)}
         </div>
       </section>
+    </div>
 
-      <section class="panel comments-panel">
-        <h2>Nearby shared observations</h2>
-        <div class="comments-list">
-          ${renderAreaObservations(property)}
-        </div>
-      </section>
+    <section class="panel comments-panel">
+      <h2>Nearby shared observations</h2>
+      <div class="comments-list">
+        ${renderAreaObservations(property)}
+      </div>
+    </section>
   `;
 
-  const form = detailPanel.querySelector("#reviewForm");
-  form.addEventListener("submit", (event) => handleReviewSubmit(event, property.id));
+  document.querySelector("#openReviewButton").addEventListener("click", () => openReviewPopup(property.id));
+}
+
+function openReviewPopup(propertyId) {
+  reviewFormContainer.innerHTML = renderReviewForm(propertyId);
+  const form = reviewFormContainer.querySelector("#reviewForm");
+  form.addEventListener("submit", (event) => {
+    handleReviewSubmit(event, propertyId);
+    reviewDialog.close();
+  });
+
+  // Initialize segmented controls
+  reviewFormContainer.querySelectorAll(".segmented-control").forEach(control => {
+    const hiddenInput = control.querySelector("input[type='hidden']");
+    control.querySelectorAll("button").forEach(btn => {
+      btn.addEventListener("click", () => {
+        control.querySelectorAll("button").forEach(b => b.dataset.active = "false");
+        btn.dataset.active = "true";
+        hiddenInput.value = btn.dataset.value;
+      });
+    });
+  });
+
+  reviewDialog.showModal();
 }
 
 async function handleReviewSubmit(event, propertyId) {
@@ -358,17 +384,15 @@ function renderMapEmptyState() {
       </div>
       <h2>${state.selectedPlace ? escapeHtml(state.selectedPlace.name) : "Selected Location"}</h2>
       <p>${state.selectedPlace ? escapeHtml(state.selectedPlace.display_name) : `${state.selectedLocation.lat}, ${state.selectedLocation.lng}`}</p>
+      <div class="property-actions">
+        <button class="primary-button" id="openReviewButton">Add first account</button>
+      </div>
     </section>
 
     <div class="content-grid">
       <section class="panel">
         <h2>No accounts yet</h2>
-        <p class="empty-copy">Be the first to add an account for this property.</p>
-      </section>
-
-      <section class="panel">
-        <h2>Submit first structured review</h2>
-        ${renderReviewForm(null)}
+        <p class="empty-copy">We apologize, but no one has added an account for this specific property yet. You can be the first to help others by adding your observation.</p>
       </section>
     </div>
   `;
@@ -430,35 +454,43 @@ function renderBar(average) {
 function renderReviewForm(propertyId) {
   return `
     <form class="review-form" id="reviewForm" data-property-id="${propertyId}">
-      <label>
-        Contributor role
-        <select name="contributor_role" required>
-          <option value="Current resident">Current resident</option>
-          <option value="Former resident">Former resident</option>
-          <option value="Buyer or tenant prospect">Buyer or tenant prospect</option>
-          <option value="General public contributor">General public contributor</option>
-          <option value="Owner or landlord">Owner or landlord</option>
-        </select>
-      </label>
-      <label>
-        Lived or observed period
-        <input name="lived_period" placeholder="2023-2025, visited weekly, current">
-      </label>
+      <div class="form-grid">
+        <label>
+          Contributor role
+          <select name="contributor_role" required>
+            <option value="Current resident">Current resident</option>
+            <option value="Former resident">Former resident</option>
+            <option value="Buyer or tenant prospect">Buyer or tenant prospect</option>
+            <option value="General public contributor">General public contributor</option>
+            <option value="Owner or landlord">Owner or landlord</option>
+          </select>
+        </label>
+        <label>
+          Observed period
+          <input name="lived_period" placeholder="e.g. 2023-2025, current" required>
+        </label>
+      </div>
+
       <div class="scale-grid">
         ${fields.map(([field, label]) => scale(field, label)).join("")}
       </div>
-      <label>
-        Rent range actually paid
-        <input name="rent_range" placeholder="Optional">
-      </label>
-      <label>
-        Hidden costs
-        <input name="hidden_costs" placeholder="Maintenance, generator, water tanker">
-      </label>
-      <label>
+
+      <div class="form-grid" style="margin-top: 16px">
+        <label>
+          Rent range paid
+          <input name="rent_range" placeholder="Optional">
+        </label>
+        <label>
+          Hidden costs
+          <input name="hidden_costs" placeholder="e.g. Tankers, maintenance">
+        </label>
+      </div>
+
+      <label class="wide">
         Optional comment
         <textarea name="comment" placeholder="Keep it specific and factual"></textarea>
       </label>
+
       <p class="form-error"></p>
       <button class="primary-button" type="submit">Submit review</button>
     </form>
@@ -466,17 +498,45 @@ function renderReviewForm(propertyId) {
 }
 
 function scale(field, label) {
+  let options = [
+    { label: "Good", value: "5", variant: "good" },
+    { label: "Fair", value: "3", variant: "" },
+    { label: "Poor", value: "1", variant: "poor" },
+  ];
+
+  if (field === "maintenance" || field === "structure" || field === "seepage") {
+    options = [
+      { label: "Good", value: "5", variant: "good" },
+      { label: "Poor", value: "1", variant: "poor" },
+    ];
+  } else if (field === "elevator") {
+    options = [
+      { label: "Elevator", value: "5", variant: "good" },
+      { label: "Stairs", value: "1", variant: "poor" },
+    ];
+  }
+
+  const defaultValue = field === "elevator" ? "1" : (options.length === 3 ? "3" : "5");
+
   return `
-    <label class="scale-control">
+    <div class="scale-control">
       <span>${label}</span>
-      <select name="${field}" required>
-        <option value="1">1 - Poor</option>
-        <option value="2">2 - Weak</option>
-        <option value="3" selected>3 - Mixed</option>
-        <option value="4">4 - Good</option>
-        <option value="5">5 - Strong</option>
-      </select>
-    </label>
+      <div class="segmented-control" data-field="${field}">
+        <input type="hidden" name="${field}" value="${defaultValue}" required>
+        ${options
+          .map(
+            (opt) => `
+          <button type="button"
+            data-value="${opt.value}"
+            data-variant="${opt.variant}"
+            data-active="${opt.value === defaultValue ? "true" : "false"}">
+            ${opt.label}
+          </button>
+        `
+          )
+          .join("")}
+      </div>
+    </div>
   `;
 }
 

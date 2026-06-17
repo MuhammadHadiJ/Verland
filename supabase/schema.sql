@@ -84,6 +84,42 @@ create table if not exists public.profiles (
   updated_at timestamptz not null default now()
 );
 
+-- Robust migration to ensure all columns exist even if tables were created previously
+do $$
+begin
+  -- Properties columns
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'external_provider') then
+    alter table public.properties add column external_provider text not null default 'manual';
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'external_place_id') then
+    alter table public.properties add column external_place_id text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'external_display_name') then
+    alter table public.properties add column external_display_name text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'external_payload') then
+    alter table public.properties add column external_payload jsonb;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'map_provider') then
+    alter table public.properties add column map_provider text not null default 'locationiq';
+  end if;
+
+  -- Property Reviews columns
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'noise') then
+    alter table public.property_reviews add column noise smallint not null default 3 check (noise between 1 and 5);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'security') then
+    alter table public.property_reviews add column security smallint not null default 3 check (security between 1 and 5);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'cleanliness') then
+    alter table public.property_reviews add column cleanliness smallint not null default 3 check (cleanliness between 1 and 5);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'road_access') then
+    alter table public.property_reviews add column road_access smallint not null default 3 check (road_access between 1 and 5);
+  end if;
+end
+$$;
+
 create table if not exists public.properties (
   id uuid primary key default gen_random_uuid(),
   name text not null,
@@ -286,6 +322,7 @@ returns table (
   google_place_id text,
   external_provider text,
   external_place_id text,
+  external_display_name text,
   review_count bigint,
   distance_m double precision
 )
@@ -304,6 +341,7 @@ as $$
     p.google_place_id,
     p.external_provider,
     p.external_place_id,
+    p.external_display_name,
     count(r.id) filter (
       where r.visibility = 'public' and r.moderation_status = 'active'
     ) as review_count,
