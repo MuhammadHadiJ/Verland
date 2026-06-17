@@ -18,15 +18,16 @@
       <aside class="sidebar" aria-label="Property discovery">
         <form class="search-panel" id="searchForm" autocomplete="off">
           <div class="autocomplete-container">
-            <label>
+            <label for="searchInput">
               Search
-              <input id="searchInput" name="q" type="search" placeholder="Property, area, or street">
             </label>
+            <input id="searchInput" name="q" type="search" placeholder="Property, area, or street" aria-label="Search Properties">
             <div id="autocompleteDropdown" class="autocomplete-dropdown" hidden></div>
           </div>
-          <label>
+          <label for="cityInput">
             City
-            <select id="cityInput" name="city">
+          </label>
+          <select id="cityInput" name="city" aria-label="Select City">
               <option value="">All Pakistan</option>
               <option value="Karachi">Karachi</option>
               <option value="Lahore">Lahore</option>
@@ -60,7 +61,7 @@
       <section class="detail-panel" id="detailPanel" aria-live="polite">
         <div class="empty-state">
           <h2>No property selected</h2>
-          <p>Click the exact real estate on the map to see accounts tied to that property.</p>
+          <p>Start by searching for a property or clicking a specific location on the map to see reviews.</p>
         </div>
       </section>
     </main>

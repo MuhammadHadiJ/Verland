@@ -1,15 +1,15 @@
 :root {
-  --ink: #1d2525;
-  --muted: #66736d;
-  --paper: #f7f5ee;
+  --ink: #111827;
+  --muted: #6b7280;
+  --paper: #f9fafb;
   --panel: #ffffff;
-  --line: #d9ded8;
-  --green: #0b6b57;
-  --green-dark: #07493e;
-  --gold: #b9821f;
-  --red: #b94d3b;
-  --blue: #236a93;
-  --shadow: 0 18px 40px rgba(29, 37, 37, 0.08);
+  --line: #e5e7eb;
+  --green: #064e3b;
+  --green-dark: #064e3b;
+  --gold: #d97706;
+  --red: #991b1b;
+  --blue: #1e40af;
+  --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
 }
 
 * {
@@ -295,14 +295,22 @@ button {
   width: 100%;
   text-align: left;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--panel);
-  padding: 13px;
+  padding: 16px;
+  transition: all 0.2s ease;
+  box-shadow: var(--shadow);
+}
+
+.property-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
 }
 
 .property-item[aria-current="true"] {
   border-color: var(--green);
-  box-shadow: 0 0 0 3px rgba(11, 107, 87, 0.13);
+  border-width: 2px;
+  box-shadow: 0 0 0 4px rgba(6, 78, 59, 0.1);
 }
 
 .property-item strong {
@@ -329,16 +337,19 @@ button {
 
 .detail-panel {
   overflow: auto;
-  padding: 24px;
+  padding: 32px;
+  background-color: #fff;
 }
 
 .empty-state {
   display: grid;
   place-content: center;
-  gap: 10px;
-  min-height: 58vh;
+  gap: 16px;
+  min-height: 60vh;
   color: var(--muted);
   text-align: center;
+  max-width: 400px;
+  margin: 0 auto;
 }
 
 .empty-state .primary-button {
@@ -366,23 +377,28 @@ button {
 
 .metric {
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--panel);
-  padding: 13px;
+  padding: 20px;
   box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 }
 
 .metric span {
   display: block;
   color: var(--muted);
-  font-size: 0.76rem;
-  font-weight: 800;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 8px;
 }
 
 .metric strong {
   display: block;
-  margin-top: 4px;
-  font-size: 1.2rem;
+  font-size: 1.5rem;
+  color: var(--ink);
+  font-weight: 700;
 }
 
 .content-grid {
@@ -443,6 +459,28 @@ button {
   background: var(--green);
 }
 
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+}
+
+.status-pill.good {
+  background-color: #d1fae5;
+  color: #065f46;
+}
+
+.status-pill.poor {
+  background-color: #fee2e2;
+  color: #991b1b;
+}
+
 .review-form {
   display: grid;
   gap: 16px;
@@ -469,26 +507,27 @@ button {
 .segmented-control {
   display: flex;
   width: 100%;
-  background: #eef2ef;
-  border-radius: 8px;
+  background: #f3f4f6;
+  border-radius: 9999px;
   padding: 4px;
-  gap: 4px;
+  gap: 2px;
 }
 
 .segmented-control button {
   flex: 1;
-  border-radius: 6px;
-  padding: 8px;
-  font-size: 0.82rem;
+  border-radius: 9999px;
+  padding: 10px 16px;
+  font-size: 0.875rem;
+  font-weight: 600;
   background: transparent;
-  color: var(--muted);
+  color: #4b5563;
   transition: all 0.2s ease;
 }
 
 .segmented-control button[data-active="true"] {
   background: white;
   color: var(--ink);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
 }
 
 .segmented-control button[data-active="true"][data-variant="good"] {

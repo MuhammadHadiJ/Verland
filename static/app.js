@@ -22,6 +22,7 @@ const categories = [
 ];
 
 const labelByField = Object.fromEntries(fields);
+const binaryFields = ["maintenance", "elevator", "structure", "seepage"];
 const pakistanCenter = { lat: 30.3753, lng: 69.3451 };
 const state = {
   properties: [],
@@ -277,7 +278,7 @@ function renderDetail() {
 
     <div class="insight-strip">
         ${metric("Utilities", averageFor(property, ["electricity", "water", "gas"]))}
-        ${metric("Building", averageFor(property, ["maintenance", "elevator", "structure", "seepage"]))}
+        ${metric("Building", averageFor(property, ["maintenance", "elevator", "structure", "seepage"]), true)}
         ${metric("Connectivity", averageFor(property, ["internet", "mobile_signal"]))}
         ${metric("Shared Area", sharedObservationSummary(property))}
     </div>
@@ -398,11 +399,19 @@ function renderMapEmptyState() {
   `;
 }
 
-function metric(label, value) {
+function metric(label, value, isBinary = false) {
+  let display = "No data";
+  if (value) {
+    if (isBinary) {
+      display = value >= 3.5 ? "Good" : (value >= 2.5 ? "Fair" : "Poor");
+    } else {
+      display = `${value}/5`;
+    }
+  }
   return `
     <div class="metric">
       <span>${label}</span>
-      <strong>${value ? `${value}/5` : "No data"}</strong>
+      <strong>${display}</strong>
     </div>
   `;
 }
@@ -429,11 +438,22 @@ function renderCategory(property, name, categoryFields) {
       ${categoryFields
         .map((field) => {
           const average = property.averages[field];
+          const isBinary = binaryFields.includes(field);
+
+          let visual = renderBar(average);
+          let label = average ? average.toFixed(1) : "-";
+
+          if (isBinary && average) {
+            const percent = Math.round(((average - 1) / 4) * 100);
+            visual = `<div class="status-pill ${average >= 3.5 ? 'good' : 'poor'}">${percent}% Positive</div>`;
+            label = "";
+          }
+
           return `
             <div class="score-row">
               <span>${labelByField[field]}</span>
-              ${renderBar(average)}
-              <strong>${average ? average.toFixed(1) : "-"}</strong>
+              ${visual}
+              <strong>${label}</strong>
             </div>
           `;
         })
