@@ -22,6 +22,13 @@ jobs:
           version: latest
 
       - name: Link and Sync Schema
+        env:
+          JAVA_TOOL_OPTIONS: "-Djava.net.preferIPv4Stack=true"
+        run: |
+          supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}" --password "${{ secrets.SUPABASE_DB_PASSWORD }}" --skip-pooler --dns-resolver native
+          supabase db query --linked --file ./supabase/schema.sql --dns-resolver native
+
+      - name: Link and Sync Schema
         run: |
           # --dns-resolver native forces the CLI to use IPv4 network modes
           supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}" --password "${{ secrets.SUPABASE_DB_PASSWORD }}" --skip-pooler --dns-resolver native
