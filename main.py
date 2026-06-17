@@ -65,14 +65,21 @@ def read_env():
     if not ENV_PATH.exists():
         return values
 
-    for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+    try:
+        content = ENV_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return values
+
+    for line in content.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        separator = "=" if "=" in line else ":"
-        if separator not in line:
+        if "=" in line:
+            key, value = line.split("=", 1)
+        elif ":" in line:
+            key, value = line.split(":", 1)
+        else:
             continue
-        key, value = line.split(separator, 1)
         values[key.strip()] = value.strip().strip('"').strip("'")
     return values
 
@@ -524,14 +531,16 @@ class AppHandler(SimpleHTTPRequestHandler):
         lng = params.get("lng", [""])[0]
         radius_km = params.get("radius_km", ["0.075"])[0]
 
+        select_values = []
         where = []
-        values = []
+        where_values = []
+
         if query:
             where.append("(lower(name) like %s or lower(address) like %s or lower(area) like %s or lower(coalesce(external_display_name, '')) like %s)")
-            values.extend([f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%"])
+            where_values.extend([f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%"])
         if city:
             where.append("lower(city) = %s")
-            values.append(city)
+            where_values.append(city)
 
         distance_select = ""
         order_by = "created_at desc"
@@ -546,9 +555,9 @@ class AppHandler(SimpleHTTPRequestHandler):
 
             point = "st_setsrid(st_makepoint(%s, %s), 4326)::geography"
             distance_select = f", st_distance(location, {point}) as distance_m"
-            values.extend([origin_lng, origin_lat])
+            select_values.extend([origin_lng, origin_lat])
             where.append(f"st_dwithin(location, {point}, %s)")
-            values.extend([origin_lng, origin_lat, radius_m])
+            where_values.extend([origin_lng, origin_lat, radius_m])
             order_by = "distance_m asc, created_at desc"
 
         sql = f"select * {distance_select} from public.properties"
@@ -557,8 +566,9 @@ class AppHandler(SimpleHTTPRequestHandler):
         sql += f" order by {order_by} limit 50"
 
         with connect() as conn:
+            all_values = select_values + where_values
             with conn.cursor() as cur:
-                cur.execute(sql, values)
+                cur.execute(sql, all_values)
                 rows = cur.fetchall()
             self.send_json({"properties": [property_summary(conn, row) for row in rows]})
 
