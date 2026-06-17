@@ -441,19 +441,14 @@ function scale(field, label) {
     { label: "Poor", value: "1", variant: "poor" },
   ];
 
-  if (field === "maintenance" || field === "structure" || field === "seepage") {
-    options = [
-      { label: "Good", value: "5", variant: "good" },
-      { label: "Poor", value: "1", variant: "poor" },
-    ];
-  } else if (field === "elevator") {
+  if (field === "elevator") {
     options = [
       { label: "Elevator", value: "5", variant: "good" },
       { label: "Stairs", value: "1", variant: "poor" },
     ];
   }
 
-  const defaultValue = field === "elevator" ? "1" : (options.length === 3 ? "3" : "5");
+  const defaultValue = field === "elevator" ? "1" : "5";
 
   return `
     <div class="scale-control">
@@ -520,11 +515,10 @@ function renderComments(property) {
 }
 
 function formatScore(field, value) {
-  if (binaryFields.includes(field)) {
-    if (field === "elevator") return value === 5 ? "Elevator" : "Stairs";
-    return value >= 5 ? "Good" : "Poor";
-  }
-  return `${value}/5`;
+  if (field === "elevator") return value === 5 ? "Elevator" : "Stairs";
+  if (value >= 4) return "Good";
+  if (value >= 2) return "Fair";
+  return "Poor";
 }
 
 function renderAreaObservations(property) {
@@ -533,13 +527,19 @@ function renderAreaObservations(property) {
     return `<p class="empty-copy">No nearby shared observations yet.</p>`;
   }
 
+  const getSeverityLabel = (v) => {
+    if (v >= 4) return "Low Impact";
+    if (v >= 2) return "Moderate";
+    return "High Impact";
+  };
+
   return observations
     .map(
       (observation) => `
         <article class="comment">
           <strong>${escapeHtml(observation.observation_kind).replaceAll("_", " ")}</strong>
           <div class="meta-row">
-            <span>Severity ${observation.severity}/5</span>
+            <span class="pill">${getSeverityLabel(observation.severity)}</span>
             <span>${Math.round(observation.distance_m)} m away</span>
           </div>
           ${observation.note ? `<p>${escapeHtml(observation.note)}</p>` : ""}
