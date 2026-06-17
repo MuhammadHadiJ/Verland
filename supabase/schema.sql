@@ -113,6 +113,18 @@ create table if not exists public.properties (
   constraint properties_longitude_check check (longitude between 60.0 and 78.0)
 );
 
+-- Ensure missing columns are added if the table already exists
+do $$
+begin
+  alter table public.properties add column if not exists external_provider text not null default 'manual';
+  alter table public.properties add column if not exists external_place_id text;
+  alter table public.properties add column if not exists external_display_name text;
+  alter table public.properties add column if not exists external_payload jsonb;
+  alter table public.properties add column if not exists map_provider text not null default 'locationiq';
+exception
+  when others then null;
+end $$;
+
 create table if not exists public.property_claims (
   id uuid primary key default gen_random_uuid(),
   property_id uuid not null references public.properties(id) on delete cascade,
@@ -157,6 +169,17 @@ create table if not exists public.property_reviews (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Ensure missing columns are added if the table already exists
+do $$
+begin
+  alter table public.property_reviews add column if not exists noise smallint not null check (noise between 1 and 5) default 3;
+  alter table public.property_reviews add column if not exists security smallint not null check (security between 1 and 5) default 3;
+  alter table public.property_reviews add column if not exists cleanliness smallint not null check (cleanliness between 1 and 5) default 3;
+  alter table public.property_reviews add column if not exists road_access smallint not null check (road_access between 1 and 5) default 3;
+exception
+  when others then null;
+end $$;
 
 create table if not exists public.area_observations (
   id uuid primary key default gen_random_uuid(),
