@@ -20,7 +20,8 @@ jobs:
           version: latest
 
       - name: Update Database
-        run: |
-          supabase db query \
-            --db-url "postgresql://postgres.${{ secrets.SUPABASE_PROJECT_REF }}:${{ secrets.SUPABASE_DB_PASSWORD }}@aws-0-ap-south-1.pooler.supabase.com:6543/postgres" \
-            --file ./supabase/schema.sql
+              run: |
+                supabase db query \
+                  --project-ref "${{ secrets.SUPABASE_PROJECT_REF}}" \
+                  --password "${{ secrets.SUPABASE_DB_PASSWORD}}" \
+                  --file ./supabase/schema.sql
