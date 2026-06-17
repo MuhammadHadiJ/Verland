@@ -1,81 +1,89 @@
 -- Real Estate Reality - Pakistan MVP
--- Source of truth for the Supabase/Postgres backend.
+-- Full Reset Schema Script
+-- This script will DESTROY and RECREATE all objects to ensure a clean state.
 
+-- 1. Drop existing objects in reverse order of dependency
+drop function if exists public.nearby_area_observations(double precision, double precision, integer);
+drop function if exists public.nearby_properties(double precision, double precision, integer);
+drop function if exists public.exact_property_reviews(uuid);
+drop function if exists public.set_updated_at() cascade;
+
+drop table if exists public.review_access_grants cascade;
+drop table if exists public.review_reports cascade;
+drop table if exists public.area_observations cascade;
+drop table if exists public.property_reviews cascade;
+drop table if exists public.property_claims cascade;
+drop table if exists public.properties cascade;
+drop table if exists public.profiles cascade;
+
+drop type if exists public.property_type cascade;
+drop type if exists public.account_kind cascade;
+drop type if exists public.contributor_role cascade;
+drop type if exists public.claim_status cascade;
+drop type if exists public.review_visibility cascade;
+drop type if exists public.moderation_status cascade;
+drop type if exists public.area_observation_kind cascade;
+
+-- 2. Enable Extensions
 create extension if not exists "pgcrypto";
 create extension if not exists "postgis";
 
-do $$
-begin
-  if not exists (select 1 from pg_type where typname = 'property_type') then
-    create type public.property_type as enum (
-      'apartment',
-      'house',
-      'plot',
-      'commercial'
-    );
-  end if;
+-- 3. Create Custom Types
+create type public.property_type as enum (
+  'apartment',
+  'house',
+  'plot',
+  'commercial'
+);
 
-  if not exists (select 1 from pg_type where typname = 'account_kind') then
-    create type public.account_kind as enum (
-      'resident',
-      'buyer_or_tenant',
-      'owner_or_landlord',
-      'general_public',
-      'moderator',
-      'admin'
-    );
-  end if;
+create type public.account_kind as enum (
+  'resident',
+  'buyer_or_tenant',
+  'owner_or_landlord',
+  'general_public',
+  'moderator',
+  'admin'
+);
 
-  if not exists (select 1 from pg_type where typname = 'contributor_role') then
-    create type public.contributor_role as enum (
-      'current_resident',
-      'former_resident',
-      'buyer_or_tenant_prospect',
-      'general_public_contributor',
-      'owner_or_landlord'
-    );
-  end if;
+create type public.contributor_role as enum (
+  'current_resident',
+  'former_resident',
+  'buyer_or_tenant_prospect',
+  'general_public_contributor',
+  'owner_or_landlord'
+);
 
-  if not exists (select 1 from pg_type where typname = 'claim_status') then
-    create type public.claim_status as enum (
-      'pending',
-      'approved',
-      'rejected',
-      'revoked'
-    );
-  end if;
+create type public.claim_status as enum (
+  'pending',
+  'approved',
+  'rejected',
+  'revoked'
+);
 
-  if not exists (select 1 from pg_type where typname = 'review_visibility') then
-    create type public.review_visibility as enum (
-      'public',
-      'contributor_only',
-      'hidden'
-    );
-  end if;
+create type public.review_visibility as enum (
+  'public',
+  'contributor_only',
+  'hidden'
+);
 
-  if not exists (select 1 from pg_type where typname = 'moderation_status') then
-    create type public.moderation_status as enum (
-      'active',
-      'flagged',
-      'removed'
-    );
-  end if;
+create type public.moderation_status as enum (
+  'active',
+  'flagged',
+  'removed'
+);
 
-  if not exists (select 1 from pg_type where typname = 'area_observation_kind') then
-    create type public.area_observation_kind as enum (
-      'noise',
-      'street_security',
-      'cleanliness',
-      'air_quality',
-      'road_access',
-      'transport',
-      'other'
-    );
-  end if;
-end
-$$;
+create type public.area_observation_kind as enum (
+  'noise',
+  'street_security',
+  'cleanliness',
+  'air_quality',
+  'road_access',
+  'transport',
+  'other'
+);
 
-create table if not exists public.profiles (
+-- 4. Create Tables
+create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   display_name text,
   account_kind public.account_kind not null default 'general_public',
@@ -84,7 +92,7 @@ create table if not exists public.profiles (
   updated_at timestamptz not null default now()
 );
 
-create table if not exists public.properties (
+create table public.properties (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   property_type public.property_type not null,
@@ -113,19 +121,7 @@ create table if not exists public.properties (
   constraint properties_longitude_check check (longitude between 60.0 and 78.0)
 );
 
--- Ensure missing columns are added if the table already exists
-do $$
-begin
-  alter table public.properties add column if not exists external_provider text not null default 'manual';
-  alter table public.properties add column if not exists external_place_id text;
-  alter table public.properties add column if not exists external_display_name text;
-  alter table public.properties add column if not exists external_payload jsonb;
-  alter table public.properties add column if not exists map_provider text not null default 'locationiq';
-exception
-  when others then null;
-end $$;
-
-create table if not exists public.property_claims (
+create table public.property_claims (
   id uuid primary key default gen_random_uuid(),
   property_id uuid not null references public.properties(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -139,7 +135,7 @@ create table if not exists public.property_claims (
   unique (property_id, user_id, claimed_role)
 );
 
-create table if not exists public.property_reviews (
+create table public.property_reviews (
   id uuid primary key default gen_random_uuid(),
   property_id uuid not null references public.properties(id) on delete cascade,
   user_id uuid references auth.users(id) on delete set null,
@@ -170,18 +166,7 @@ create table if not exists public.property_reviews (
   updated_at timestamptz not null default now()
 );
 
--- Ensure missing columns are added if the table already exists
-do $$
-begin
-  alter table public.property_reviews add column if not exists noise smallint not null check (noise between 1 and 5) default 3;
-  alter table public.property_reviews add column if not exists security smallint not null check (security between 1 and 5) default 3;
-  alter table public.property_reviews add column if not exists cleanliness smallint not null check (cleanliness between 1 and 5) default 3;
-  alter table public.property_reviews add column if not exists road_access smallint not null check (road_access between 1 and 5) default 3;
-exception
-  when others then null;
-end $$;
-
-create table if not exists public.area_observations (
+create table public.area_observations (
   id uuid primary key default gen_random_uuid(),
   anchor_property_id uuid references public.properties(id) on delete set null,
   user_id uuid references auth.users(id) on delete set null,
@@ -200,7 +185,7 @@ create table if not exists public.area_observations (
   constraint area_observations_longitude_check check (longitude between 60.0 and 78.0)
 );
 
-create table if not exists public.review_reports (
+create table public.review_reports (
   id uuid primary key default gen_random_uuid(),
   review_id uuid not null references public.property_reviews(id) on delete cascade,
   reporter_id uuid references auth.users(id) on delete set null,
@@ -208,7 +193,7 @@ create table if not exists public.review_reports (
   created_at timestamptz not null default now()
 );
 
-create table if not exists public.review_access_grants (
+create table public.review_access_grants (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   property_id uuid references public.properties(id) on delete cascade,
@@ -217,24 +202,26 @@ create table if not exists public.review_access_grants (
   created_at timestamptz not null default now()
 );
 
-create index if not exists properties_location_idx on public.properties using gist (location);
-create index if not exists properties_city_idx on public.properties (lower(city));
-create index if not exists properties_google_place_id_idx on public.properties (google_place_id)
+-- 5. Create Indexes
+create index properties_location_idx on public.properties using gist (location);
+create index properties_city_idx on public.properties (lower(city));
+create index properties_google_place_id_idx on public.properties (google_place_id)
   where google_place_id is not null;
-create index if not exists properties_external_provider_place_idx
+create index properties_external_provider_place_idx
   on public.properties (external_provider, external_place_id)
   where external_place_id is not null;
-create index if not exists property_claims_property_user_idx
+create index property_claims_property_user_idx
   on public.property_claims (property_id, user_id, status);
-create index if not exists property_reviews_property_id_created_at_idx
+create index property_reviews_property_id_created_at_idx
   on public.property_reviews (property_id, created_at desc);
-create index if not exists property_reviews_user_id_idx on public.property_reviews (user_id);
-create index if not exists area_observations_location_idx on public.area_observations using gist (location);
-create index if not exists area_observations_anchor_property_idx
+create index property_reviews_user_id_idx on public.property_reviews (user_id);
+create index area_observations_location_idx on public.area_observations using gist (location);
+create index area_observations_anchor_property_idx
   on public.area_observations (anchor_property_id, created_at desc);
-create index if not exists review_access_grants_user_property_idx
+create index review_access_grants_user_property_idx
   on public.review_access_grants (user_id, property_id);
 
+-- 6. Create Functions and Triggers
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
@@ -245,39 +232,25 @@ begin
 end;
 $$;
 
-do $$
-begin
-  if not exists (select 1 from pg_trigger where tgname = 'profiles_set_updated_at') then
-    create trigger profiles_set_updated_at
-    before update on public.profiles
-    for each row execute function public.set_updated_at();
-  end if;
+create trigger profiles_set_updated_at
+before update on public.profiles
+for each row execute function public.set_updated_at();
 
-  if not exists (select 1 from pg_trigger where tgname = 'properties_set_updated_at') then
-    create trigger properties_set_updated_at
-    before update on public.properties
-    for each row execute function public.set_updated_at();
-  end if;
+create trigger properties_set_updated_at
+before update on public.properties
+for each row execute function public.set_updated_at();
 
-  if not exists (select 1 from pg_trigger where tgname = 'property_claims_set_updated_at') then
-    create trigger property_claims_set_updated_at
-    before update on public.property_claims
-    for each row execute function public.set_updated_at();
-  end if;
+create trigger property_claims_set_updated_at
+before update on public.property_claims
+for each row execute function public.set_updated_at();
 
-  if not exists (select 1 from pg_trigger where tgname = 'property_reviews_set_updated_at') then
-    create trigger property_reviews_set_updated_at
-    before update on public.property_reviews
-    for each row execute function public.set_updated_at();
-  end if;
+create trigger property_reviews_set_updated_at
+before update on public.property_reviews
+for each row execute function public.set_updated_at();
 
-  if not exists (select 1 from pg_trigger where tgname = 'area_observations_set_updated_at') then
-    create trigger area_observations_set_updated_at
-    before update on public.area_observations
-    for each row execute function public.set_updated_at();
-  end if;
-end
-$$;
+create trigger area_observations_set_updated_at
+before update on public.area_observations
+for each row execute function public.set_updated_at();
 
 create or replace function public.exact_property_reviews(property_uuid uuid)
 returns setof public.property_reviews
@@ -375,6 +348,7 @@ as $$
   order by distance_m asc, o.created_at desc;
 $$;
 
+-- 7. Enable RLS
 alter table public.profiles enable row level security;
 alter table public.properties enable row level security;
 alter table public.property_claims enable row level security;
@@ -383,110 +357,77 @@ alter table public.area_observations enable row level security;
 alter table public.review_reports enable row level security;
 alter table public.review_access_grants enable row level security;
 
-do $$
-begin
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'profiles' and policyname = 'Profiles are publicly readable') then
-    create policy "Profiles are publicly readable"
-    on public.profiles for select
-    using (true);
-  end if;
+-- 8. Create Policies
+create policy "Profiles are publicly readable"
+on public.profiles for select
+using (true);
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'profiles' and policyname = 'Users can insert their profile') then
-    create policy "Users can insert their profile"
-    on public.profiles for insert
-    to authenticated
-    with check (id = auth.uid());
-  end if;
+create policy "Users can insert their profile"
+on public.profiles for insert
+to authenticated
+with check (id = auth.uid());
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'profiles' and policyname = 'Users can update their profile') then
-    create policy "Users can update their profile"
-    on public.profiles for update
-    to authenticated
-    using (id = auth.uid())
-    with check (id = auth.uid());
-  end if;
+create policy "Users can update their profile"
+on public.profiles for update
+to authenticated
+using (id = auth.uid())
+with check (id = auth.uid());
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'properties' and policyname = 'Anyone can read properties') then
-    create policy "Anyone can read properties"
-    on public.properties for select
-    using (true);
-  end if;
+create policy "Anyone can read properties"
+on public.properties for select
+using (true);
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'properties' and policyname = 'Authenticated users can create properties') then
-    create policy "Authenticated users can create properties"
-    on public.properties for insert
-    to authenticated
-    with check (created_by = auth.uid());
-  end if;
+create policy "Authenticated users can create properties"
+on public.properties for insert
+to authenticated
+with check (created_by = auth.uid());
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'properties' and policyname = 'Property creators can update their properties') then
-    create policy "Property creators can update their properties"
-    on public.properties for update
-    to authenticated
-    using (created_by = auth.uid())
-    with check (created_by = auth.uid());
-  end if;
+create policy "Property creators can update their properties"
+on public.properties for update
+to authenticated
+using (created_by = auth.uid())
+with check (created_by = auth.uid());
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'property_claims' and policyname = 'Users can read their own property claims') then
-    create policy "Users can read their own property claims"
-    on public.property_claims for select
-    to authenticated
-    using (user_id = auth.uid());
-  end if;
+create policy "Users can read their own property claims"
+on public.property_claims for select
+to authenticated
+using (user_id = auth.uid());
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'property_claims' and policyname = 'Users can create their own property claims') then
-    create policy "Users can create their own property claims"
-    on public.property_claims for insert
-    to authenticated
-    with check (user_id = auth.uid());
-  end if;
+create policy "Users can create their own property claims"
+on public.property_claims for insert
+to authenticated
+with check (user_id = auth.uid());
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'property_reviews' and policyname = 'Anyone can read public active reviews') then
-    create policy "Anyone can read public active reviews"
-    on public.property_reviews for select
-    using (visibility = 'public' and moderation_status = 'active');
-  end if;
+create policy "Anyone can read public active reviews"
+on public.property_reviews for select
+using (visibility = 'public' and moderation_status = 'active');
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'property_reviews' and policyname = 'Authenticated users can create reviews') then
-    create policy "Authenticated users can create reviews"
-    on public.property_reviews for insert
-    to authenticated
-    with check (user_id = auth.uid());
-  end if;
+create policy "Authenticated users can create reviews"
+on public.property_reviews for insert
+to authenticated
+with check (user_id = auth.uid());
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'property_reviews' and policyname = 'Review authors can update their reviews') then
-    create policy "Review authors can update their reviews"
-    on public.property_reviews for update
-    to authenticated
-    using (user_id = auth.uid())
-    with check (user_id = auth.uid());
-  end if;
+create policy "Review authors can update their reviews"
+on public.property_reviews for update
+to authenticated
+using (user_id = auth.uid())
+with check (user_id = auth.uid());
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'area_observations' and policyname = 'Anyone can read active area observations') then
-    create policy "Anyone can read active area observations"
-    on public.area_observations for select
-    using (moderation_status = 'active');
-  end if;
+create policy "Anyone can read active area observations"
+on public.area_observations for select
+using (moderation_status = 'active');
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'area_observations' and policyname = 'Authenticated users can create area observations') then
-    create policy "Authenticated users can create area observations"
-    on public.area_observations for insert
-    to authenticated
-    with check (user_id = auth.uid());
-  end if;
+create policy "Authenticated users can create area observations"
+on public.area_observations for insert
+to authenticated
+with check (user_id = auth.uid());
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'review_reports' and policyname = 'Authenticated users can report reviews') then
-    create policy "Authenticated users can report reviews"
-    on public.review_reports for insert
-    to authenticated
-    with check (reporter_id = auth.uid());
-  end if;
+create policy "Authenticated users can report reviews"
+on public.review_reports for insert
+to authenticated
+with check (reporter_id = auth.uid());
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'review_access_grants' and policyname = 'Users can read their review access grants') then
-    create policy "Users can read their review access grants"
-    on public.review_access_grants for select
-    to authenticated
-    using (user_id = auth.uid());
-  end if;
-end
-$$;
+create policy "Users can read their review access grants"
+on public.review_access_grants for select
+to authenticated
+using (user_id = auth.uid());
