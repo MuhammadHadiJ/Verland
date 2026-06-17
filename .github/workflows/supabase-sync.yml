@@ -8,12 +8,15 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      # This stops GitHub from throwing deprecation execution strictness fits
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Grab the code
         uses: actions/checkout@v4
 
       - name: Set up Supabase
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@v2 # Updated to v2 for Node 24 support
         with:
           version: latest
 
