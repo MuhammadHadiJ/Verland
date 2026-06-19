@@ -1,30 +1,31 @@
-const fields = [
-  ["electricity", "Electricity reliability"],
+const propertySpecificFields = [
+  ["electricity", "Electricity availability"],
   ["water", "Water availability"],
   ["gas", "Gas availability"],
-  ["maintenance", "Building maintenance"],
-  ["elevator", "Elevator reliability"],
-  ["structure", "Structural condition"],
-  ["seepage", "Drainage/seepage"],
-  ["internet", "Internet quality"],
-  ["mobile_signal", "Mobile signal"],
-  ["noise", "Street noise"],
-  ["security", "Area security"],
+  ["maintenance", "Maintenance quality"],
+  ["elevator", "Elevator"],
+  ["parking", "Parking"],
+  ["internet", "Fiber Internet"],
+  ["structure", "Building structure"],
+  ["seepage", "Seepage/Dampness"],
+];
+
+const neighborhoodFields = [
+  ["security", "Street security"],
+  ["noise", "Noise levels"],
+  ["traffic", "Traffic congestion"],
   ["cleanliness", "Cleanliness"],
-  ["road_access", "Road accessibility"],
+  ["flooding", "Rain flooding"],
+  ["sewage", "Sewage system"],
+  ["road_access", "Road access"],
+  ["mobile_signal", "Mobile signal"],
 ];
 
-const categories = [
-  ["Property Utilities", ["electricity", "water", "gas"]],
-  ["Building Quality", ["maintenance", "elevator", "structure", "seepage"]],
-  ["Property Connectivity", ["internet", "mobile_signal"]],
-  ["Shared Environment", ["noise", "security", "cleanliness", "road_access"]],
-];
-
-const labelByField = Object.fromEntries(fields);
-const binaryFields = ["maintenance", "elevator", "structure", "seepage"];
+const allFields = [...propertySpecificFields, ...neighborhoodFields];
+const labelByField = Object.fromEntries(allFields);
 const pakistanCenter = { lat: 30.3753, lng: 69.3451 };
 const state = {
+  user: null, // { name: 'Mock User', provider: 'google' }
   properties: [],
   selectedId: null,
   selectedLocation: null,
@@ -97,6 +98,7 @@ function renderAutocomplete(places) {
       selectMapLocation({ lat: Number(place.lat), lng: Number(place.lon || place.lng) });
       if (state.googleMap) {
         state.googleMap.setZoom(18);
+        state.googleMap.panTo({ lat: Number(place.lat), lng: Number(place.lon || place.lng) });
       }
     });
     autocompleteDropdown.append(item);
@@ -109,14 +111,29 @@ document.addEventListener("click", (event) => {
   }
 });
 
-mapPanel.addEventListener("click", (event) => {
+mapPanel.addEventListener("click", async (event) => {
   if (event.target.id === "googleMap" || state.googleMap) return;
   const rect = mapPanel.getBoundingClientRect();
   const x = (event.clientX - rect.left) / rect.width;
   const y = (event.clientY - rect.top) / rect.height;
   const lat = 37.1 - y * 13.5;
   const lng = 60.8 + x * 16.7;
-  selectMapLocation({ lat, lng }, { x: event.clientX - rect.left, y: event.clientY - rect.top });
+
+  // Clear search on manual map click to avoid confusion/filtering
+  searchInput.value = "";
+
+  await selectMapLocation({ lat, lng }, { x: event.clientX - rect.left, y: event.clientY - rect.top });
+
+  // Try to reverse geocode so we have a real address for the property
+  try {
+      const result = await api(`/api/location-reverse?lat=${lat}&lng=${lng}`);
+      if (result.place) {
+          state.selectedPlace = result.place;
+          renderDetail(); // Update with real address if found
+      }
+  } catch (err) {
+      console.warn("Reverse geocoding failed", err);
+  }
 });
 
 
@@ -150,11 +167,22 @@ function loadGoogleMaps(apiKey) {
       fullscreenControl: false,
     });
 
-    state.googleMap.addListener("click", (event) => {
-      selectMapLocation({
-        lat: event.latLng.lat(),
-        lng: event.latLng.lng(),
-      });
+    state.googleMap.addListener("click", async (event) => {
+      const lat = event.latLng.lat();
+      const lng = event.latLng.lng();
+
+      searchInput.value = "";
+      await selectMapLocation({ lat, lng });
+
+      try {
+          const result = await api(`/api/location-reverse?lat=${lat}&lng=${lng}`);
+          if (result.place) {
+              state.selectedPlace = result.place;
+              renderDetail();
+          }
+      } catch (err) {
+          console.warn("Reverse geocoding failed", err);
+      }
     });
   };
 
@@ -238,7 +266,7 @@ function renderList() {
       <span class="meta-row">
         <span class="pill">${escapeHtml(property.property_type)}</span>
         <span class="pill">${escapeHtml(property.area)}, ${escapeHtml(property.city)}</span>
-        <span class="pill">${property.review_count} responses</span>
+        <span class="pill">${property.review_count} ${property.review_count === 1 ? 'account' : 'accounts'}</span>
         ${property.distance_km == null ? "" : `<span class="pill">${property.distance_km} km away</span>`}
       </span>
     `;
@@ -255,45 +283,113 @@ function renderDetail() {
   const property = state.properties.find((item) => item.id === state.selectedId);
   if (!property) {
     detailPanel.innerHTML = renderMapEmptyState();
-    const btn = detailPanel.querySelector("#openReviewButton");
-    if (btn) {
-      btn.addEventListener("click", () => openReviewPopup(null));
-    }
+    bindDetailEvents(null);
     return;
   }
 
   detailPanel.innerHTML = `
-    <section class="property-hero">
-      <div class="meta-row">
+    <header class="sticky-property-header">
+      <div class="header-content">
+        <div class="header-meta">
+          <h2>${escapeHtml(property.name)}</h2>
+          <p>${escapeHtml(property.address)}</p>
+        </div>
+        <div class="header-actions">
+           ${!state.user ? `
+             <button class="secondary-button" id="signInGoogle">Sign in with Google</button>
+             <button class="secondary-button" id="signInMicrosoft">Sign in with Microsoft</button>
+           ` : `
+             <button class="primary-button" id="openReviewButton">Add Review</button>
+             <span class="user-badge">${escapeHtml(state.user.name)}</span>
+           `}
+        </div>
+      </div>
+    </header>
+
+    <div class="property-page-content">
+      <div class="meta-row" style="margin-bottom: 24px;">
         <span class="pill">${escapeHtml(property.property_type)}</span>
         <span class="pill">${escapeHtml(property.area)}, ${escapeHtml(property.city)}</span>
-        <span class="pill">${property.review_count} individual ${property.review_count === 1 ? 'account' : 'accounts'}</span>
+        <span class="pill">${property.review_count} individual accounts</span>
       </div>
-      <h2>${escapeHtml(property.name)}</h2>
-      <p>${escapeHtml(property.address)}</p>
-      <div class="property-actions">
-        <button class="primary-button" id="openReviewButton">Add your review</button>
-      </div>
-    </section>
 
-    <div class="content-grid full-width">
-      <section class="panel">
-        <h2>Ground Truth Accounts</h2>
-        <div class="comments-list">
-          ${renderComments(property)}
+      <section class="aggregation-section">
+        <div class="aggregation-grid">
+          <div class="aggregation-panel">
+            <h3>Property Conditions</h3>
+            <div class="stats-list">
+              ${renderStats(property.property_stats, propertySpecificFields)}
+            </div>
+          </div>
+          <div class="aggregation-panel">
+            <h3>Neighborhood Conditions</h3>
+            <div class="stats-list">
+              ${renderStats(property.neighborhood_stats, neighborhoodFields)}
+            </div>
+          </div>
         </div>
       </section>
 
-      <section class="panel">
-        <h2>Nearby shared observations</h2>
+      <section class="panel" style="margin-top: 32px">
+        <h3>Individual Experiences</h3>
         <div class="comments-list">
-          ${renderAreaObservations(property)}
+          ${renderComments(property)}
         </div>
       </section>
     </div>
   `;
 
-  document.querySelector("#openReviewButton").addEventListener("click", () => openReviewPopup(property.id));
+  bindDetailEvents(property.id);
+}
+
+function bindDetailEvents(propertyId) {
+  setTimeout(() => {
+    if (state.user) {
+        const btn = document.querySelector("#openReviewButton");
+        if (btn) btn.addEventListener("click", () => openReviewPopup(propertyId));
+    } else {
+        const sig = document.querySelector("#signInGoogle");
+        const sim = document.querySelector("#signInMicrosoft");
+        if (sig) sig.addEventListener("click", () => mockSignIn('Google'));
+        if (sim) sim.addEventListener("click", () => mockSignIn('Microsoft'));
+    }
+  }, 0);
+}
+
+function mockSignIn(provider) {
+    console.log("mockSignIn called with", provider);
+    state.user = { name: 'Explorer User', provider: provider.toLowerCase() };
+    renderDetail();
+}
+
+function renderStats(stats, fields) {
+  if (!stats) return '<p class="empty-copy">No data available.</p>';
+
+  const html = fields.map(([key, label]) => {
+    const s = stats[key];
+    if (!s || s.total === 0) return "";
+    const dominant = s.dominant || "No data";
+
+    // Extract the label part for coloring (e.g. "Mostly Good" -> "good")
+    let dataValue = "";
+    if (dominant.startsWith("Mostly ")) {
+        dataValue = dominant.replace("Mostly ", "").toLowerCase();
+    }
+
+    return `
+      <div class="stat-row">
+        <span class="stat-label">${label}</span>
+        <div class="stat-value-container">
+          <span class="stat-dominant" data-is-distribution="${dominant.includes('%')}" data-value="${dataValue}">
+            ${escapeHtml(dominant)}
+          </span>
+          <span class="stat-count">${s.total} reviews</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  return html || '<p class="empty-copy">Insufficient data for this section.</p>';
 }
 
 function openReviewPopup(propertyId) {
@@ -360,29 +456,43 @@ function renderMapEmptyState() {
   if (!state.selectedLocation) {
     return `
       <div class="empty-state">
-        <h2>Start with the map</h2>
-        <p>Click the exact building, house, plot, or commercial property to view accounts tied to that real estate.</p>
+        <h2>Property discovery is search-first</h2>
+        <p>Start by searching for a specific property or area above to view real-world insights.</p>
       </div>
     `;
   }
 
+  const name = state.selectedPlace ? state.selectedPlace.name : "Selected Location";
+  const address = state.selectedPlace ? state.selectedPlace.display_name : `${state.selectedLocation.lat}, ${state.selectedLocation.lng}`;
+
   return `
-    <section class="property-hero">
-      <div class="meta-row">
+    <header class="sticky-property-header">
+      <div class="header-content">
+        <div class="header-meta">
+          <h2>${escapeHtml(name)}</h2>
+          <p>${escapeHtml(address)}</p>
+        </div>
+        <div class="header-actions">
+           ${!state.user ? `
+             <button class="secondary-button" id="signInGoogle">Sign in with Google</button>
+             <button class="secondary-button" id="signInMicrosoft">Sign in with Microsoft</button>
+           ` : `
+             <button class="primary-button" id="openReviewButton">Add Review</button>
+             <span class="user-badge">${escapeHtml(state.user.name)}</span>
+           `}
+        </div>
+      </div>
+    </header>
+
+    <div class="property-page-content">
+      <div class="meta-row" style="margin-bottom: 24px;">
         <span class="pill">New location</span>
       </div>
-      <h2>${state.selectedPlace ? escapeHtml(state.selectedPlace.name) : "Selected Location"}</h2>
-      <p>${state.selectedPlace ? escapeHtml(state.selectedPlace.display_name) : `${state.selectedLocation.lat}, ${state.selectedLocation.lng}`}</p>
-      <div class="property-actions">
-        <button class="primary-button" id="openReviewButton">Add first account</button>
-      </div>
-    </section>
 
-    <div class="content-grid">
-      <section class="panel">
-        <h2>No accounts yet</h2>
-        <p class="empty-copy">We apologize, but no one has added an account for this specific property yet. You can be the first to help others by adding your observation.</p>
-      </section>
+      <div class="panel">
+        <h3>No experiences shared here yet</h3>
+        <p class="empty-copy">We apologize, but no one has added an account for this specific property yet. You can be the first to help others by sharing your observation.</p>
+      </div>
     </div>
   `;
 }
@@ -408,9 +518,20 @@ function renderReviewForm(propertyId) {
         </label>
       </div>
 
-      <div class="scale-grid">
-        ${fields.map(([field, label]) => scale(field, label)).join("")}
+      <div class="review-section">
+        <h4>Property Conditions</h4>
+        <div class="scale-grid">
+          ${propertySpecificFields.map(([field, label]) => scale(field, label)).join("")}
+        </div>
       </div>
+
+      <div class="review-section">
+        <h4>Neighborhood Conditions</h4>
+        <div class="scale-grid">
+          ${neighborhoodFields.map(([field, label]) => scale(field, label)).join("")}
+        </div>
+      </div>
+
 
       <div class="form-grid" style="margin-top: 16px">
         <label>
@@ -429,7 +550,7 @@ function renderReviewForm(propertyId) {
       </label>
 
       <p class="form-error"></p>
-      <button class="primary-button" type="submit">Submit review</button>
+      <button class="primary-button" type="submit">Submit Review</button>
     </form>
   `;
 }
@@ -441,14 +562,48 @@ function scale(field, label) {
     { label: "Poor", value: "1", variant: "poor" },
   ];
 
-  if (field === "elevator") {
+  if (field === "noise") {
     options = [
-      { label: "Elevator", value: "5", variant: "good" },
-      { label: "Stairs", value: "1", variant: "poor" },
+      { label: "Low", value: "5", variant: "good" },
+      { label: "Moderate", value: "3", variant: "" },
+      { label: "High", value: "1", variant: "poor" },
+    ];
+  } else if (field === "security") {
+    options = [
+      { label: "Safe", value: "5", variant: "good" },
+      { label: "Average", value: "3", variant: "" },
+      { label: "Unsafe", value: "1", variant: "poor" },
+    ];
+  } else if (field === "elevator") {
+    options = [
+      { label: "Present", value: "5", variant: "good" },
+      { label: "None", value: "1", variant: "poor" },
+    ];
+  } else if (field === "parking") {
+    options = [
+      { label: "Present", value: "5", variant: "good" },
+      { label: "None", value: "1", variant: "poor" },
+    ];
+  } else if (field === "internet") {
+    options = [
+      { label: "Available", value: "5", variant: "good" },
+      { label: "Not Available", value: "1", variant: "poor" },
+    ];
+  } else if (field === "flooding") {
+    options = [
+      { label: "None", value: "5", variant: "good" },
+      { label: "Minor", value: "3", variant: "" },
+      { label: "Severe", value: "1", variant: "poor" },
+    ];
+  } else if (field === "sewage") {
+    options = [
+      { label: "None", value: "5", variant: "good" },
+      { label: "Occasional", value: "3", variant: "" },
+      { label: "Frequent", value: "1", variant: "poor" },
     ];
   }
 
-  const defaultValue = field === "elevator" ? "1" : "5";
+  const defaultValue = (field === "elevator" || field === "parking") ? "1" : "5";
 
   return `
     <div class="scale-control">
@@ -474,7 +629,7 @@ function scale(field, label) {
 
 function renderComments(property) {
   if (!property.comments.length) {
-    return `<p class="empty-copy">No reviews yet for this property.</p>`;
+    return `<p class="empty-copy">No experiences shared for this property yet.</p>`;
   }
 
   return property.comments
@@ -491,19 +646,11 @@ function renderComments(property) {
             ${comment.hidden_costs ? `<span>Hidden Costs: ${escapeHtml(comment.hidden_costs)}</span>` : ""}
           </div>
 
-          <div class="comment-scores-grid">
-            ${categories.map(([catName, fields]) => `
-              <div class="comment-cat">
-                <h4>${catName}</h4>
-                <div class="scores-list">
-                  ${fields.map(f => `
-                    <div class="score-line">
-                      <span>${labelByField[f]}</span>
-                      <strong>${formatScore(f, comment.scores[f])}</strong>
-                    </div>
-                  `).join("")}
+          <div class="comment-scores-list">
+            ${allFields.map(([f, label]) => `
+                <div class="score-pill" data-value="${comment.scores[f]}">
+                  ${label}: <strong>${formatScore(f, comment.scores[f])}</strong>
                 </div>
-              </div>
             `).join("")}
           </div>
 
@@ -515,7 +662,29 @@ function renderComments(property) {
 }
 
 function formatScore(field, value) {
-  if (field === "elevator") return value === 5 ? "Elevator" : "Stairs";
+  if (field === "elevator") return value === 5 ? "Present" : "None";
+  if (field === "parking") return value === 5 ? "Present" : "None";
+  if (field === "internet") return value === 5 ? "Available" : "Not Available";
+  if (field === "flooding") {
+    if (value >= 4) return "None";
+    if (value >= 2) return "Minor";
+    return "Severe";
+  }
+  if (field === "sewage") {
+    if (value >= 4) return "None";
+    if (value >= 2) return "Occasional";
+    return "Frequent";
+  }
+  if (field === "noise") {
+      if (value >= 4) return "Low";
+      if (value >= 2) return "Moderate";
+      return "High";
+  }
+  if (field === "security") {
+      if (value >= 4) return "Safe";
+      if (value >= 2) return "Average";
+      return "Unsafe";
+  }
   if (value >= 4) return "Good";
   if (value >= 2) return "Fair";
   return "Poor";

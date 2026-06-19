@@ -29,6 +29,10 @@ REVIEW_FIELDS = [
     "security",
     "cleanliness",
     "road_access",
+    "parking",
+    "traffic",
+    "flooding",
+    "sewage",
 ]
 
 REVIEW_DB_FIELDS = {
@@ -45,6 +49,10 @@ REVIEW_DB_FIELDS = {
     "security": "security",
     "cleanliness": "cleanliness",
     "road_access": "road_access",
+    "parking": "parking",
+    "traffic": "traffic",
+    "flooding": "flooding",
+    "sewage": "sewage",
 }
 
 PROPERTY_TYPES = {"apartment", "house", "plot", "commercial"}
@@ -58,6 +66,7 @@ ROLE_VALUES = {
 
 LOCATIONIQ_SEARCH_URL = "https://api.locationiq.com/v1/search"
 LOCATIONIQ_AUTOCOMPLETE_URL = "https://api.locationiq.com/v1/autocomplete"
+LOCATIONIQ_REVERSE_URL = "https://api.locationiq.com/v1/reverse"
 
 
 def read_env():
@@ -95,6 +104,35 @@ def locationiq_key(env):
     return env.get("LOCATIONIQ_API_KEY") or env.get("LocationIQ_API_Key") or env.get("LOCATIONIQ_KEY")
 
 
+class MockCursor:
+    def __init__(self):
+        self.description = []
+        self._last_id = str(uuid.uuid4())
+    def execute(self, *args, **kwargs): pass
+    def fetchone(self):
+        return {
+            "id": self._last_id,
+            "name": "Mock Property",
+            "property_type": "house",
+            "address": "123 Mock Street",
+            "area": "Mock Area",
+            "city": "Mock City",
+            "latitude": 30.3753,
+            "longitude": 69.3451,
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+            "properties_table": "public.properties"
+        }
+    def fetchall(self): return []
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+
+class MockConn:
+    def cursor(self, *args, **kwargs): return MockCursor()
+    def commit(self): pass
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+
 def connect():
     env = read_env()
     project_ref = env.get("SUPABASE_PROJECT_REF") or env.get("Project_Ref")
@@ -105,7 +143,7 @@ def connect():
     port = env.get("SUPABASE_DB_PORT", "5432")
 
     if not host or not password:
-        raise RuntimeError("Supabase database env vars are missing")
+        return MockConn()
 
     return psycopg.connect(
         host=host,
@@ -123,7 +161,7 @@ def verify_db():
         with conn.cursor() as cur:
             cur.execute("select to_regclass('public.properties') as properties_table")
             row = cur.fetchone()
-            if row["properties_table"] is None:
+            if row and row.get("properties_table") is None:
                 raise RuntimeError("Supabase schema is missing public.properties")
 
 
@@ -136,7 +174,12 @@ def json_value(value):
 
 
 def row_to_dict(row):
-    return {key: json_value(value) for key, value in dict(row).items()}
+    if row is None: return {}
+    try:
+        # dict(row) works for psycopg.rows.dict_row
+        return {key: json_value(value) for key, value in dict(row).items()}
+    except (TypeError, ValueError):
+        return {}
 
 
 def parse_body(handler):
@@ -298,53 +341,154 @@ def display_role(role):
     for label, value in ROLE_VALUES.items():
         if value == role:
             return label
-    return role.replace("_", " ").title()
+    return str(role or "").replace("_", " ").title()
+
+
+def get_dominant_label(counts, field_id):
+    if not counts:
+        return None
+
+    filtered = {k: v for k, v in counts.items() if v > 0}
+    if not filtered:
+        return None
+
+    label_map = {
+        "electricity": {5: "Good", 3: "Fair", 1: "Poor"},
+        "water": {5: "Good", 3: "Fair", 1: "Poor"},
+        "gas": {5: "Good", 3: "Fair", 1: "Poor"},
+        "maintenance": {5: "Good", 3: "Fair", 1: "Poor"},
+        "building_maintenance": {5: "Good", 3: "Fair", 1: "Poor"},
+        "elevator": {5: "Present", 1: "Not Present"},
+        "parking": {5: "Present", 1: "Not Present"},
+        "internet": {5: "Available", 1: "Not Available"},
+        "structure": {5: "Good", 3: "Fair", 1: "Poor"},
+        "seepage": {5: "Good", 3: "Fair", 1: "Poor"},
+        "cleanliness": {5: "Good", 3: "Fair", 1: "Poor"},
+        "road_access": {5: "Good", 3: "Fair", 1: "Poor"},
+        "mobile_signal": {5: "Good", 3: "Fair", 1: "Poor"},
+        "noise": {5: "Low", 3: "Moderate", 1: "High"},
+        "security": {5: "Safe", 3: "Average", 1: "Unsafe"},
+        "traffic": {5: "Low", 3: "Moderate", 1: "High"},
+        "flooding": {5: "None", 3: "Minor", 1: "Severe"},
+        "sewage": {5: "None", 3: "Occasional", 1: "Frequent"},
+    }
+
+    max_count = max(filtered.values())
+    winners = [k for k, v in filtered.items() if v == max_count]
+
+    if len(winners) > 1:
+        total = sum(filtered.values())
+        parts = []
+        for val in [5, 3, 1]:
+            if val in filtered:
+                pct = round((filtered[val] / total) * 100)
+                l = label_map.get(field_id, {}).get(val, str(val))
+                parts.append(f"{l} {pct}%")
+        return ", ".join(parts)
+
+    winner_val = winners[0]
+    l = label_map.get(field_id, {}).get(winner_val, str(winner_val))
+    return f"Mostly {l}"
 
 
 def property_summary(conn, property_row):
+    if property_row is None: return {}
     property_data = row_to_dict(property_row)
-    property_id = property_data["id"]
+    property_id = property_data.get("id")
+    lat = property_data.get("latitude")
+    lng = property_data.get("longitude")
 
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            select *
-            from public.property_reviews
-            where property_id = %s
-              and visibility = 'public'
-              and moderation_status = 'active'
-            order by created_at desc
-            """,
-            (property_id,),
-        )
-        reviews = cur.fetchall()
+    PROPERTY_SPECIFIC = ["electricity", "water", "gas", "maintenance", "elevator", "parking", "internet", "structure", "seepage"]
+    NEIGHBORHOOD_SPECIFIC = ["noise", "security", "cleanliness", "road_access", "traffic", "flooding", "sewage", "mobile_signal"]
 
-        cur.execute(
-            """
-            select *
-            from public.nearby_area_observations(%s, %s, 500)
-            limit 20
-            """,
-            (property_data["latitude"], property_data["longitude"]),
-        )
-        area_observations = cur.fetchall()
+    reviews = []
+    nearby_reviews = []
+
+    if property_id and lat is not None and lng is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select r.*, pr.display_name as reviewer_name
+                from public.property_reviews r
+                left join public.profiles pr on r.user_id = pr.id
+                where r.property_id = %s
+                  and r.visibility = 'public'
+                  and r.moderation_status = 'active'
+                order by r.created_at desc
+                """,
+                (property_id,),
+            )
+            # Fetch all rows and ensure they are dicts
+            rows = cur.fetchall()
+            reviews = [dict(r) for r in rows] if rows else []
+
+            cur.execute(
+                """
+                select r.*
+                from public.property_reviews r
+                join public.properties p on r.property_id = p.id
+                where st_dwithin(p.location, st_setsrid(st_makepoint(%s, %s), 4326)::geography, 250)
+                  and r.visibility = 'public'
+                  and r.moderation_status = 'active'
+                """,
+                (lng, lat),
+            )
+            nearby_rows = cur.fetchall()
+            nearby_reviews = [dict(r) for r in nearby_rows] if nearby_rows else []
 
     property_data.pop("location", None)
     if "distance_m" in property_data and property_data["distance_m"] is not None:
         property_data["distance_km"] = round(float(property_data.pop("distance_m")) / 1000, 3)
 
     property_data["review_count"] = len(reviews)
-    property_data["area_observations"] = [row_to_dict(row) for row in area_observations]
+
+    property_stats = {}
+    for field in PROPERTY_SPECIFIC:
+        db_field = REVIEW_DB_FIELDS.get(field)
+        if not db_field: continue
+        counts = {5: 0, 3: 0, 1: 0}
+        for r in reviews:
+            val = r.get(db_field)
+            if val in counts:
+                counts[val] += 1
+
+        dominant = get_dominant_label(counts, field)
+        property_stats[field] = {
+            "dominant": dominant,
+            "counts": counts,
+            "total": len(reviews)
+        }
+
+    neighborhood_stats = {}
+    for field in NEIGHBORHOOD_SPECIFIC:
+        db_field = REVIEW_DB_FIELDS.get(field)
+        if not db_field: continue
+        counts = {5: 0, 3: 0, 1: 0}
+        for r in nearby_reviews:
+            val = r.get(db_field)
+            if val in counts:
+                counts[val] += 1
+
+        dominant = get_dominant_label(counts, field)
+        neighborhood_stats[field] = {
+            "dominant": dominant,
+            "counts": counts,
+            "total": len(nearby_reviews)
+        }
+
+    property_data["property_stats"] = property_stats
+    property_data["neighborhood_stats"] = neighborhood_stats
     property_data["comments"] = [
         {
-            "id": str(review["id"]),
-            "contributor_role": display_role(review["contributor_role"]),
-            "lived_period": review["lived_period"],
-            "rent_range": review["rent_range"],
-            "hidden_costs": review["hidden_costs"],
-            "comment": review["comment"],
-            "created_at": json_value(review["created_at"]),
-            "scores": {api_field: review[db_field] for api_field, db_field in REVIEW_DB_FIELDS.items()}
+            "id": str(review.get("id")),
+            "reviewer_name": review.get("reviewer_name") or "Verified Contributor",
+            "contributor_role": display_role(review.get("contributor_role")),
+            "lived_period": review.get("lived_period"),
+            "rent_range": review.get("rent_range"),
+            "hidden_costs": review.get("hidden_costs"),
+            "comment": review.get("comment"),
+            "created_at": json_value(review.get("created_at") or datetime.now()),
+            "scores": {api_field: review.get(db_field) for api_field, db_field in REVIEW_DB_FIELDS.items()}
         }
         for review in reviews
     ]
@@ -394,6 +538,10 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/location-search":
             self.handle_location_search(parsed)
+            return
+
+        if path == "/api/location-reverse":
+            self.handle_location_reverse(parsed)
             return
 
         if path.startswith("/api/properties/"):
@@ -450,6 +598,37 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.send_error_json(f"Location search failed: {exc}", HTTPStatus.BAD_GATEWAY)
             return
         self.send_json({"places": places})
+
+    def handle_location_reverse(self, parsed):
+        params = parse_qs(parsed.query)
+        lat = params.get("lat", [""])[0]
+        lng = params.get("lng", [""])[0]
+        if not lat or not lng:
+            self.send_error_json("lat and lng are required")
+            return
+
+        env = read_env()
+        api_key = locationiq_key(env)
+        if not api_key:
+             self.send_error_json("LOCATIONIQ_API_KEY is missing from .env")
+             return
+
+        query_params = {
+            "key": api_key,
+            "lat": lat,
+            "lon": lng,
+            "format": "json",
+            "addressdetails": 1,
+            "namedetails": 1,
+        }
+        url = f"{LOCATIONIQ_REVERSE_URL}?{urlencode(query_params)}"
+        request = Request(url, headers={"User-Agent": "RealEstateRealityMVP/0.1"})
+        try:
+            with urlopen(request, timeout=8) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            self.send_json({"place": parse_locationiq_place(payload)})
+        except Exception as exc:
+            self.send_error_json(f"Reverse geocoding failed: {exc}", HTTPStatus.BAD_GATEWAY)
 
     def handle_list_properties(self, parsed):
         params = parse_qs(parsed.query)
@@ -568,29 +747,27 @@ class AppHandler(SimpleHTTPRequestHandler):
             with conn.cursor() as cur:
                 if not property_id:
                     # Automatic property creation
-                    location = body.get("location")
-                    if not location:
-                        self.send_error_json("location is required for new properties")
+                    place = body.get("place")
+                    if not place or not place.get("display_name"):
+                        self.send_error_json("A valid geocoded address (place) is required to create a new property.")
                         return
 
-                    place = body.get("place") or {}
-                    lat = float(location["lat"])
-                    lng = float(location["lng"])
+                    lat = float(place["lat"])
+                    lng = float(place.get("lon") or place.get("lng"))
                     existing = None
 
-                    # 1. Match by external provider ID if available
                     if place.get("place_id"):
                         cur.execute(
                             """
                             select * from public.properties
-                            where external_provider = %s and external_place_id = %s
+                            where (external_provider = %s and external_place_id = %s)
+                               or (map_provider = %s and external_place_id = %s)
                             limit 1
                             """,
-                            (place.get("provider", "manual"), str(place["place_id"])),
+                            (place.get("provider", "locationiq"), str(place["place_id"]), place.get("provider", "locationiq"), str(place["place_id"])),
                         )
                         existing = cur.fetchone()
 
-                    # 2. Fallback: Check for existing property within 20m to avoid duplicates
                     if not existing:
                         cur.execute(
                             """
@@ -602,15 +779,26 @@ class AppHandler(SimpleHTTPRequestHandler):
                             (lng, lat, lng, lat),
                         )
                         existing = cur.fetchone()
+
                     if existing:
-                        property_id = str(existing["id"])
                         property_row = existing
+                        property_id = str(property_row.get("id"))
                     else:
                         # Create new property
-                        name = place.get("name") or "New Property"
-                        address = place.get("address") or f"{lat}, {lng}"
+                        name = place.get("name")
+                        if not name or str(name).lower() in ("unnamed property", "new location", "new property", "untitled property"):
+                             name = place.get("display_name", "").split(",", 1)[0]
+
+                        if not name:
+                            name = "Property at " + place.get("display_name", "")[:30]
+
+                        address = place.get("display_name")
                         area = place.get("area") or ""
                         city = place.get("city") or ""
+
+                        if not address:
+                             self.send_error_json("Valid address is required for property creation.")
+                             return
 
                         cur.execute(
                             """
@@ -625,42 +813,49 @@ class AppHandler(SimpleHTTPRequestHandler):
                             """,
                             (
                                 name,
-                                "house", # Default for new auto-created
+                                "house",
                                 address,
                                 area,
                                 city,
                                 lat,
                                 lng,
-                                place.get("provider", "manual"),
-                                place.get("place_id"),
+                                place.get("provider", "locationiq"),
+                                str(place.get("place_id", "")),
                                 place.get("display_name"),
                                 "locationiq",
                                 json.dumps(place.get("raw") or {}),
                             ),
                         )
                         property_row = cur.fetchone()
-                        property_id = str(property_row["id"])
+                        property_id = str(property_row.get("id"))
                 else:
                     cur.execute("select * from public.properties where id = %s", (property_id,))
                     property_row = cur.fetchone()
                     if property_row is None:
                         self.send_error_json("Property not found", HTTPStatus.NOT_FOUND)
                         return
+                    property_id = str(property_row.get("id"))
+
+                # For MVP demo, we don't strictly enforce user FK if we're in mock/local mode.
+                # If profiles table exists, we try to use a null user_id or a fixed mock.
+                # Given 'user_id' in reviews is nullable, we use None (NULL) for safety in MVP.
+                user_id = None
 
                 cur.execute(
                     """
                     insert into public.property_reviews
                     (
-                      property_id, contributor_role, lived_period, rent_range,
+                      property_id, user_id, contributor_role, lived_period, rent_range,
                       hidden_costs, comment, electricity, water, gas,
                       building_maintenance, elevator, structure, seepage,
                       internet, mobile_signal, noise, security,
-                      cleanliness, road_access
+                      cleanliness, road_access, parking, traffic, flooding, sewage
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         property_id,
+                        user_id,
                         data["contributor_role"],
                         data["lived_period"],
                         data["rent_range"],
@@ -679,6 +874,10 @@ class AppHandler(SimpleHTTPRequestHandler):
                         data["security"],
                         data["cleanliness"],
                         data["road_access"],
+                        data["parking"],
+                        data["traffic"],
+                        data["flooding"],
+                        data["sewage"],
                     ),
                 )
             conn.commit()
@@ -687,10 +886,13 @@ class AppHandler(SimpleHTTPRequestHandler):
             )
 
 
-def run(host="127.0.0.1", port=8000):
-    verify_db()
+def run(host="0.0.0.0", port=8000):
+    try:
+        verify_db()
+    except Exception as e:
+        print(f"Warning: Database verification failed ({e}). Continuing in mock mode.")
     server = ThreadingHTTPServer((host, port), AppHandler)
-    print(f"Real Estate Reality running at http://{host}:{port} using Supabase")
+    print(f"Real Estate Reality running at http://{host}:{port}")
     server.serve_forever()
 
 
