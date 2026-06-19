@@ -117,6 +117,18 @@ begin
   if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'road_access') then
     alter table public.property_reviews add column road_access smallint not null default 3 check (road_access between 1 and 5);
   end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'parking') then
+    alter table public.property_reviews add column parking smallint not null default 3 check (parking between 1 and 5);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'traffic') then
+    alter table public.property_reviews add column traffic smallint not null default 3 check (traffic between 1 and 5);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'flooding') then
+    alter table public.property_reviews add column flooding smallint not null default 3 check (flooding between 1 and 5);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'sewage') then
+    alter table public.property_reviews add column sewage smallint not null default 3 check (sewage between 1 and 5);
+  end if;
 end
 $$;
 
@@ -190,6 +202,10 @@ create table if not exists public.property_reviews (
   security smallint not null check (security between 1 and 5) default 3,
   cleanliness smallint not null check (cleanliness between 1 and 5) default 3,
   road_access smallint not null check (road_access between 1 and 5) default 3,
+  parking smallint not null check (parking between 1 and 5) default 3,
+  traffic smallint not null check (traffic between 1 and 5) default 3,
+  flooding smallint not null check (flooding between 1 and 5) default 3,
+  sewage smallint not null check (sewage between 1 and 5) default 3,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
