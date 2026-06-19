@@ -143,21 +143,27 @@ def connect():
     port = env.get("SUPABASE_DB_PORT", "5432")
 
     if not host or not password:
+        print("!! WARNING: Using Mock Database !! Review storage will NOT persist.")
         return MockConn()
 
-    return psycopg.connect(
-        host=host,
-        port=port,
-        dbname=database,
-        user=user,
-        password=password,
-        sslmode="require",
-        row_factory=dict_row,
-    )
+    try:
+        return psycopg.connect(
+            host=host,
+            port=port,
+            dbname=database,
+            user=user,
+            password=password,
+            sslmode="require",
+            row_factory=dict_row,
+        )
+    except Exception as e:
+        print(f"!! CRITICAL: Connection to Supabase failed: {e}")
+        return MockConn()
 
 
 def verify_db():
     with connect() as conn:
+        if isinstance(conn, MockConn): return
         with conn.cursor() as cur:
             cur.execute("select to_regclass('public.properties') as properties_table")
             row = cur.fetchone()
@@ -176,7 +182,6 @@ def json_value(value):
 def row_to_dict(row):
     if row is None: return {}
     try:
-        # dict(row) works for psycopg.rows.dict_row
         return {key: json_value(value) for key, value in dict(row).items()}
     except (TypeError, ValueError):
         return {}
@@ -418,7 +423,6 @@ def property_summary(conn, property_row):
                 """,
                 (property_id,),
             )
-            # Fetch all rows and ensure they are dicts
             rows = cur.fetchall()
             reviews = [dict(r) for r in rows] if rows else []
 
@@ -675,9 +679,13 @@ class AppHandler(SimpleHTTPRequestHandler):
         with connect() as conn:
             all_values = select_values + where_values
             with conn.cursor() as cur:
-                cur.execute(sql, all_values)
-                rows = cur.fetchall()
-            self.send_json({"properties": [property_summary(conn, row) for row in rows]})
+                try:
+                    cur.execute(sql, all_values)
+                    rows = cur.fetchall()
+                    self.send_json({"properties": [property_summary(conn, row) for row in rows]})
+                except Exception as e:
+                    print(f"!! SQL ERROR in list_properties: {e}")
+                    self.send_error_json("Database query failed.")
 
     def handle_get_property(self, property_id):
         with connect() as conn:
@@ -700,40 +708,44 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         with connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    insert into public.properties
-                    (
-                      name, property_type, address, area, city, country,
-                      latitude, longitude, external_provider, external_place_id,
-                      external_display_name, google_place_id, google_place_name,
-                      google_formatted_address, map_provider, external_payload
+                try:
+                    cur.execute(
+                        """
+                        insert into public.properties
+                        (
+                          name, property_type, address, area, city, country,
+                          latitude, longitude, external_provider, external_place_id,
+                          external_display_name, google_place_id, google_place_name,
+                          google_formatted_address, map_provider, external_payload
+                        )
+                        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        returning *
+                        """,
+                        (
+                            data["name"],
+                            data["property_type"],
+                            data["address"],
+                            data["area"],
+                            data["city"],
+                            data["country"],
+                            data["latitude"],
+                            data["longitude"],
+                            data["external_provider"],
+                            data["external_place_id"],
+                            data["external_display_name"],
+                            data["google_place_id"],
+                            data["google_place_name"],
+                            data["google_formatted_address"],
+                            data["external_provider"],
+                            json.dumps(external_payload) if external_payload else json.dumps(data),
+                        ),
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    returning *
-                    """,
-                    (
-                        data["name"],
-                        data["property_type"],
-                        data["address"],
-                        data["area"],
-                        data["city"],
-                        data["country"],
-                        data["latitude"],
-                        data["longitude"],
-                        data["external_provider"],
-                        data["external_place_id"],
-                        data["external_display_name"],
-                        data["google_place_id"],
-                        data["google_place_name"],
-                        data["google_formatted_address"],
-                        data["external_provider"],
-                        json.dumps(external_payload) if external_payload else json.dumps(data),
-                    ),
-                )
-                row = cur.fetchone()
-            conn.commit()
-            self.send_json({"property": property_summary(conn, row)}, HTTPStatus.CREATED)
+                    row = cur.fetchone()
+                    conn.commit()
+                    self.send_json({"property": property_summary(conn, row)}, HTTPStatus.CREATED)
+                except Exception as e:
+                    print(f"!! SQL ERROR in create_property: {e}")
+                    self.send_error_json("Failed to create property in database.")
 
     def handle_create_review(self, property_id):
         try:
@@ -743,154 +755,96 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.send_error_json(str(exc))
             return
 
+        # Mock Auth Flow: Check for X-User-Id header
+        user_id = self.headers.get("X-User-Id")
+        if not user_id:
+            # Fallback to a fixed mock user for development
+            user_id = "00000000-0000-0000-0000-000000000000"
+
         with connect() as conn:
             with conn.cursor() as cur:
-                if not property_id:
-                    # Automatic property creation
-                    place = body.get("place")
-                    if not place or not place.get("display_name"):
-                        self.send_error_json("A valid geocoded address (place) is required to create a new property.")
-                        return
+                try:
+                    if not property_id:
+                        place = body.get("place")
+                        if not place or not place.get("display_name"):
+                            self.send_error_json("A valid geocoded address is required.")
+                            return
 
-                    lat = float(place["lat"])
-                    lng = float(place.get("lon") or place.get("lng"))
-                    existing = None
+                        lat = float(place["lat"])
+                        lng = float(place.get("lon") or place.get("lng"))
+                        existing = None
 
-                    if place.get("place_id"):
-                        cur.execute(
-                            """
-                            select * from public.properties
-                            where (external_provider = %s and external_place_id = %s)
-                               or (map_provider = %s and external_place_id = %s)
-                            limit 1
-                            """,
-                            (place.get("provider", "locationiq"), str(place["place_id"]), place.get("provider", "locationiq"), str(place["place_id"])),
-                        )
-                        existing = cur.fetchone()
-
-                    if not existing:
-                        cur.execute(
-                            """
-                            select * from public.properties
-                            where st_dwithin(location, st_setsrid(st_makepoint(%s, %s), 4326)::geography, 20)
-                            order by st_distance(location, st_setsrid(st_makepoint(%s, %s), 4326)::geography) asc
-                            limit 1
-                            """,
-                            (lng, lat, lng, lat),
-                        )
-                        existing = cur.fetchone()
-
-                    if existing:
-                        property_row = existing
-                        property_id = str(property_row.get("id"))
-                    else:
-                        # Create new property
-                        name = place.get("name")
-                        if not name or str(name).lower() in ("unnamed property", "new location", "new property", "untitled property"):
-                             name = place.get("display_name", "").split(",", 1)[0]
-
-                        if not name:
-                            name = "Property at " + place.get("display_name", "")[:30]
-
-                        address = place.get("display_name")
-                        area = place.get("area") or ""
-                        city = place.get("city") or ""
-
-                        if not address:
-                             self.send_error_json("Valid address is required for property creation.")
-                             return
-
-                        cur.execute(
-                            """
-                            insert into public.properties
-                            (
-                              name, property_type, address, area, city, country,
-                              latitude, longitude, external_provider, external_place_id,
-                              external_display_name, map_provider, external_payload
+                        if place.get("place_id"):
+                            cur.execute(
+                                "select * from public.properties where (external_provider = %s and external_place_id = %s) limit 1",
+                                (place.get("provider", "locationiq"), str(place["place_id"])),
                             )
-                            values (%s, %s, %s, %s, %s, 'Pakistan', %s, %s, %s, %s, %s, %s, %s)
-                            returning *
-                            """,
-                            (
-                                name,
-                                "house",
-                                address,
-                                area,
-                                city,
-                                lat,
-                                lng,
-                                place.get("provider", "locationiq"),
-                                str(place.get("place_id", "")),
-                                place.get("display_name"),
-                                "locationiq",
-                                json.dumps(place.get("raw") or {}),
-                            ),
-                        )
+                            existing = cur.fetchone()
+
+                        if not existing:
+                            cur.execute(
+                                "select * from public.properties where st_dwithin(location, st_setsrid(st_makepoint(%s, %s), 4326)::geography, 20) limit 1",
+                                (lng, lat),
+                            )
+                            existing = cur.fetchone()
+
+                        if existing:
+                            property_row = existing
+                            property_id = str(property_row.get("id"))
+                        else:
+                            name = place.get("name") or place.get("display_name", "").split(",", 1)[0]
+                            cur.execute(
+                                """
+                                insert into public.properties
+                                (name, property_type, address, area, city, country, latitude, longitude, external_provider, external_place_id, external_display_name, map_provider, external_payload)
+                                values (%s, %s, %s, %s, %s, 'Pakistan', %s, %s, %s, %s, %s, %s, %s)
+                                returning *
+                                """,
+                                (name, "house", place.get("display_name"), place.get("area") or "", place.get("city") or "", lat, lng, place.get("provider", "locationiq"), str(place.get("place_id", "")), place.get("display_name"), "locationiq", json.dumps(place.get("raw") or {})),
+                            )
+                            property_row = cur.fetchone()
+                            property_id = str(property_row.get("id"))
+                    else:
+                        cur.execute("select * from public.properties where id = %s", (property_id,))
                         property_row = cur.fetchone()
+                        if property_row is None:
+                            self.send_error_json("Property not found", HTTPStatus.NOT_FOUND)
+                            return
                         property_id = str(property_row.get("id"))
-                else:
-                    cur.execute("select * from public.properties where id = %s", (property_id,))
-                    property_row = cur.fetchone()
-                    if property_row is None:
-                        self.send_error_json("Property not found", HTTPStatus.NOT_FOUND)
-                        return
-                    property_id = str(property_row.get("id"))
 
-                # For MVP demo, we don't strictly enforce user FK if we're in mock/local mode.
-                # If profiles table exists, we try to use a null user_id or a fixed mock.
-                # Given 'user_id' in reviews is nullable, we use None (NULL) for safety in MVP.
-                user_id = None
-
-                cur.execute(
-                    """
-                    insert into public.property_reviews
-                    (
-                      property_id, user_id, contributor_role, lived_period, rent_range,
-                      hidden_costs, comment, electricity, water, gas,
-                      building_maintenance, elevator, structure, seepage,
-                      internet, mobile_signal, noise, security,
-                      cleanliness, road_access, parking, traffic, flooding, sewage
+                    # Store the Review
+                    cur.execute(
+                        """
+                        insert into public.property_reviews
+                        (
+                          property_id, user_id, contributor_role, lived_period, rent_range,
+                          hidden_costs, comment, electricity, water, gas,
+                          building_maintenance, elevator, structure, seepage,
+                          internet, mobile_signal, noise, security,
+                          cleanliness, road_access, parking, traffic, flooding, sewage
+                        )
+                        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            property_id, user_id, data["contributor_role"], data["lived_period"], data["rent_range"], data["hidden_costs"], data["comment"],
+                            data["electricity"], data["water"], data["gas"], data["maintenance"], data["elevator"], data["structure"], data["seepage"],
+                            data["internet"], data["mobile_signal"], data["noise"], data["security"], data["cleanliness"], data["road_access"], data["parking"],
+                            data["traffic"], data["flooding"], data["sewage"]
+                        ),
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        property_id,
-                        user_id,
-                        data["contributor_role"],
-                        data["lived_period"],
-                        data["rent_range"],
-                        data["hidden_costs"],
-                        data["comment"],
-                        data["electricity"],
-                        data["water"],
-                        data["gas"],
-                        data["maintenance"],
-                        data["elevator"],
-                        data["structure"],
-                        data["seepage"],
-                        data["internet"],
-                        data["mobile_signal"],
-                        data["noise"],
-                        data["security"],
-                        data["cleanliness"],
-                        data["road_access"],
-                        data["parking"],
-                        data["traffic"],
-                        data["flooding"],
-                        data["sewage"],
-                    ),
-                )
-            conn.commit()
-            self.send_json(
-                {"property": property_summary(conn, property_row)}, HTTPStatus.CREATED
-            )
+                    conn.commit()
+                    print(f"++ SUCCESS: Review stored for property {property_id}")
+                    self.send_json({"property": property_summary(conn, property_row)}, HTTPStatus.CREATED)
+                except Exception as e:
+                    print(f"!! SQL ERROR in create_review: {e}")
+                    self.send_error_json(f"Database error: {e}")
 
 
 def run(host="0.0.0.0", port=8000):
     try:
         verify_db()
     except Exception as e:
-        print(f"Warning: Database verification failed ({e}). Continuing in mock mode.")
+        print(f"!! Warning: Database verification failed ({e}).")
     server = ThreadingHTTPServer((host, port), AppHandler)
     print(f"Real Estate Reality running at http://{host}:{port}")
     server.serve_forever()
