@@ -25,7 +25,7 @@ const allFields = [...propertySpecificFields, ...neighborhoodFields];
 const labelByField = Object.fromEntries(allFields);
 const pakistanCenter = { lat: 30.3753, lng: 69.3451 };
 const state = {
-  user: null, // { name: 'Mock User', provider: 'google' }
+  user: null, // { name: 'Mock User', id: 'uuid', provider: 'google' }
   properties: [],
   selectedId: null,
   selectedLocation: null,
@@ -119,17 +119,14 @@ mapPanel.addEventListener("click", async (event) => {
   const lat = 37.1 - y * 13.5;
   const lng = 60.8 + x * 16.7;
 
-  // Clear search on manual map click to avoid confusion/filtering
   searchInput.value = "";
-
   await selectMapLocation({ lat, lng }, { x: event.clientX - rect.left, y: event.clientY - rect.top });
 
-  // Try to reverse geocode so we have a real address for the property
   try {
       const result = await api(`/api/location-reverse?lat=${lat}&lng=${lng}`);
       if (result.place) {
           state.selectedPlace = result.place;
-          renderDetail(); // Update with real address if found
+          renderDetail();
       }
   } catch (err) {
       console.warn("Reverse geocoding failed", err);
@@ -138,8 +135,13 @@ mapPanel.addEventListener("click", async (event) => {
 
 
 async function api(path, options = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (state.user && state.user.id) {
+    headers["X-User-Id"] = state.user.id;
+  }
+
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
+    headers: headers,
     ...options,
   });
   const body = await response.json();
@@ -233,13 +235,17 @@ async function loadProperties() {
     params.set("radius_km", "0.075");
   }
 
-  const result = await api(`/api/properties?${params.toString()}`);
-  state.properties = result.properties;
-  if (!state.selectedId && state.properties.length) {
-    state.selectedId = state.properties[0].id;
+  try {
+    const result = await api(`/api/properties?${params.toString()}`);
+    state.properties = result.properties;
+    if (!state.selectedId && state.properties.length) {
+      state.selectedId = state.properties[0].id;
+    }
+    renderList();
+    renderDetail();
+  } catch (err) {
+    console.error("Failed to load properties", err);
   }
-  renderList();
-  renderDetail();
 }
 
 function renderList() {
@@ -353,12 +359,15 @@ function bindDetailEvents(propertyId) {
         if (sig) sig.addEventListener("click", () => mockSignIn('Google'));
         if (sim) sim.addEventListener("click", () => mockSignIn('Microsoft'));
     }
-  }, 0);
+  }, 50);
 }
 
 function mockSignIn(provider) {
-    console.log("mockSignIn called with", provider);
-    state.user = { name: 'Explorer User', provider: provider.toLowerCase() };
+    state.user = {
+      name: 'Explorer User',
+      id: '00000000-0000-0000-0000-000000000000',
+      provider: provider.toLowerCase()
+    };
     renderDetail();
 }
 
@@ -370,7 +379,6 @@ function renderStats(stats, fields) {
     if (!s || s.total === 0) return "";
     const dominant = s.dominant || "No data";
 
-    // Extract the label part for coloring (e.g. "Mostly Good" -> "good")
     let dataValue = "";
     if (dominant.startsWith("Mostly ")) {
         dataValue = dominant.replace("Mostly ", "").toLowerCase();
@@ -397,10 +405,8 @@ function openReviewPopup(propertyId) {
   const form = reviewFormContainer.querySelector("#reviewForm");
   form.addEventListener("submit", (event) => {
     handleReviewSubmit(event, propertyId);
-    reviewDialog.close();
   });
 
-  // Initialize segmented controls
   reviewFormContainer.querySelectorAll(".segmented-control").forEach(control => {
     const hiddenInput = control.querySelector("input[type='hidden']");
     control.querySelectorAll("button").forEach(btn => {
@@ -423,10 +429,23 @@ async function handleReviewSubmit(event, propertyId) {
   const payload = Object.fromEntries(new FormData(form).entries());
 
   if (!propertyId) {
-    // Inject selected location metadata for automatic property creation
-    payload.location = state.selectedLocation;
     if (state.selectedPlace) {
       payload.place = state.selectedPlace;
+    } else if (state.selectedLocation) {
+      // Create a minimal place object if reverse geocoding didn't run
+      payload.place = {
+        lat: state.selectedLocation.lat,
+        lng: state.selectedLocation.lng,
+        display_name: `Property at ${state.selectedLocation.lat}, ${state.selectedLocation.lng}`,
+        name: `Property at ${state.selectedLocation.lat}, ${state.selectedLocation.lng}`,
+        area: "Manual selection",
+        city: "Pakistan",
+        provider: "manual",
+        raw: {}
+      };
+    } else {
+        error.textContent = "No location selected.";
+        return;
     }
   }
 
@@ -436,6 +455,8 @@ async function handleReviewSubmit(event, propertyId) {
       method: "POST",
       body: JSON.stringify(payload),
     });
+
+    reviewDialog.close();
 
     if (!propertyId) {
       state.selectedId = result.property.id;
@@ -550,7 +571,9 @@ function renderReviewForm(propertyId) {
       </label>
 
       <p class="form-error"></p>
-      <button class="primary-button" type="submit">Submit Review</button>
+      <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 12px;">
+        <button class="primary-button" type="submit">Submit Review</button>
+      </div>
     </form>
   `;
 }
@@ -577,7 +600,7 @@ function scale(field, label) {
   } else if (field === "elevator") {
     options = [
       { label: "Present", value: "5", variant: "good" },
-      { label: "None", value: "1", variant: "poor" },
+      { label: "Stairs", value: "1", variant: "poor" },
     ];
   } else if (field === "parking") {
     options = [
@@ -587,7 +610,7 @@ function scale(field, label) {
   } else if (field === "internet") {
     options = [
       { label: "Available", value: "5", variant: "good" },
-      { label: "Not Available", value: "1", variant: "poor" },
+      { label: "None", value: "1", variant: "poor" },
     ];
   } else if (field === "flooding") {
     options = [
@@ -628,7 +651,7 @@ function scale(field, label) {
 }
 
 function renderComments(property) {
-  if (!property.comments.length) {
+  if (!property.comments || !property.comments.length) {
     return `<p class="empty-copy">No experiences shared for this property yet.</p>`;
   }
 
@@ -662,9 +685,9 @@ function renderComments(property) {
 }
 
 function formatScore(field, value) {
-  if (field === "elevator") return value === 5 ? "Present" : "None";
+  if (field === "elevator") return value === 5 ? "Present" : "Stairs";
   if (field === "parking") return value === 5 ? "Present" : "None";
-  if (field === "internet") return value === 5 ? "Available" : "Not Available";
+  if (field === "internet") return value === 5 ? "Available" : "None";
   if (field === "flooding") {
     if (value >= 4) return "None";
     if (value >= 2) return "Minor";
@@ -688,34 +711,6 @@ function formatScore(field, value) {
   if (value >= 4) return "Good";
   if (value >= 2) return "Fair";
   return "Poor";
-}
-
-function renderAreaObservations(property) {
-  const observations = property.area_observations || [];
-  if (!observations.length) {
-    return `<p class="empty-copy">No nearby shared observations yet.</p>`;
-  }
-
-  const getSeverityLabel = (v) => {
-    if (v >= 4) return "Low Impact";
-    if (v >= 2) return "Moderate";
-    return "High Impact";
-  };
-
-  return observations
-    .map(
-      (observation) => `
-        <article class="comment">
-          <strong>${escapeHtml(observation.observation_kind).replaceAll("_", " ")}</strong>
-          <div class="meta-row">
-            <span class="pill">${getSeverityLabel(observation.severity)}</span>
-            <span>${Math.round(observation.distance_m)} m away</span>
-          </div>
-          ${observation.note ? `<p>${escapeHtml(observation.note)}</p>` : ""}
-        </article>
-      `
-    )
-    .join("");
 }
 
 function escapeHtml(value) {
