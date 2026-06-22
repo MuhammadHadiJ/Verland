@@ -135,23 +135,25 @@ create table public.property_reviews (
   visibility public.review_visibility not null default 'public',
   moderation_status public.moderation_status not null default 'active',
   owner_claim_id uuid references public.property_claims(id) on delete set null,
-  electricity smallint not null check (electricity between 1 and 5),
-  water smallint not null check (water between 1 and 5),
-  gas smallint not null check (gas between 1 and 5),
-  building_maintenance smallint not null check (building_maintenance between 1 and 5),
-  elevator smallint not null check (elevator between 1 and 5),
-  structure smallint not null check (structure between 1 and 5),
-  seepage smallint not null check (seepage between 1 and 5),
-  internet smallint not null check (internet between 1 and 5),
-  mobile_signal smallint not null check (mobile_signal between 1 and 5),
-  noise smallint not null check (noise between 1 and 5) default 3,
-  security smallint not null check (security between 1 and 5) default 3,
-  cleanliness smallint not null check (cleanliness between 1 and 5) default 3,
-  road_access smallint not null check (road_access between 1 and 5) default 3,
-  parking smallint not null check (parking between 1 and 5) default 3,
-  traffic smallint not null check (traffic between 1 and 5) default 3,
-  flooding smallint not null check (flooding between 1 and 5) default 3,
-  sewage smallint not null check (sewage between 1 and 5) default 3,
+  -- Ternary fields: Good=5 / Fair=3 / Poor=1 (or field-specific equivalents)
+  electricity          smallint not null check (electricity          in (1, 3, 5)),
+  water                smallint not null check (water                in (1, 3, 5)),
+  gas                  smallint not null check (gas                  in (1, 3, 5)),
+  building_maintenance smallint not null check (building_maintenance in (1, 3, 5)),
+  structure            smallint not null check (structure            in (1, 3, 5)),
+  seepage              smallint not null check (seepage              in (1, 3, 5)),
+  mobile_signal        smallint not null check (mobile_signal        in (1, 3, 5)),
+  noise                smallint not null check (noise                in (1, 3, 5)),
+  security             smallint not null check (security             in (1, 3, 5)),
+  cleanliness          smallint not null check (cleanliness          in (1, 3, 5)),
+  road_access          smallint not null check (road_access          in (1, 3, 5)),
+  traffic              smallint not null check (traffic              in (1, 3, 5)),
+  flooding             smallint not null check (flooding             in (1, 3, 5)),
+  sewage               smallint not null check (sewage               in (1, 3, 5)),
+  -- Binary fields: Present/Available=5 / Not Present/Not Available=1
+  elevator             smallint not null check (elevator             in (1, 5)),
+  internet             smallint not null check (internet             in (1, 5)),
+  parking              smallint not null check (parking              in (1, 5)),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -178,6 +180,13 @@ create table public.area_observations (
 create index properties_location_idx on public.properties using gist (location);
 create index property_reviews_property_id_created_at_idx on public.property_reviews (property_id, created_at desc);
 create index area_observations_location_idx on public.area_observations using gist (location);
+create index properties_external_provider_place_idx on public.properties (external_provider, external_place_id)
+  where external_place_id is not null;
+
+-- One review per user per property (anonymous rows excluded)
+alter table public.property_reviews
+  add constraint property_reviews_one_per_user_per_property
+  unique nulls not distinct (property_id, user_id);
 
 -- Helper functions for V1 Refined Logic
 create or replace function public.set_updated_at()
@@ -191,6 +200,29 @@ $$;
 create trigger profiles_set_updated_at before update on public.profiles for each row execute function public.set_updated_at();
 create trigger properties_set_updated_at before update on public.properties for each row execute function public.set_updated_at();
 create trigger property_reviews_set_updated_at before update on public.property_reviews for each row execute function public.set_updated_at();
+
+-- Auto-create a profiles row whenever a new Supabase auth user signs up
+create or replace function public.handle_new_user()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.profiles (id, display_name, account_kind)
+  values (
+    new.id,
+    coalesce(
+      new.raw_user_meta_data->>'full_name',
+      new.raw_user_meta_data->>'name',
+      split_part(new.email, '@', 1)
+    ),
+    'general_public'
+  )
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
 
 -- Note: Row Level Security (RLS) is intentionally omitted here for the MVP reset to ensure
 -- the developer can immediately store data. Enable it when ready for production.

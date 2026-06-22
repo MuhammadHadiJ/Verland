@@ -460,8 +460,8 @@ button {
 .stat-dominant[data-value="good"],
 .stat-dominant[data-value="safe"],
 .stat-dominant[data-value="low"],
-.stat-dominant[data-value="elevator"],
-.stat-dominant[data-value="present"] {
+.stat-dominant[data-value="present"],
+.stat-dominant[data-value="available"] {
   color: var(--green);
 }
 
@@ -470,7 +470,20 @@ button {
 .stat-dominant[data-value="high"],
 .stat-dominant[data-value="stairs"],
 .stat-dominant[data-value="not present"],
-.stat-dominant[data-value="none"] {
+.stat-dominant[data-value="not available"] {
+  color: var(--red);
+}
+
+/* Fix #7: "None" means no flooding/sewage — that's good (green), not bad */
+.stat-dominant[data-field="flooding"][data-value="none"],
+.stat-dominant[data-field="sewage"][data-value="none"] {
+  color: var(--green);
+}
+
+/* "None" for elevator/parking/internet means not present — bad (red) */
+.stat-dominant[data-field="elevator"][data-value="none"],
+.stat-dominant[data-field="parking"][data-value="none"],
+.stat-dominant[data-field="internet"][data-value="none"] {
   color: var(--red);
 }
 
