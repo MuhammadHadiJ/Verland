@@ -818,6 +818,9 @@ class AppHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
+        if path == "/api/auth/session":
+            self.handle_auth_session()
+            return
         if path == "/api/properties/new/reviews":
             self.handle_create_review(None)
             return
@@ -844,17 +847,13 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         params = parse_qs(parsed.query)
         provider = params.get("provider", ["google"])[0].lower()
-        # Only Google supported for now
         if provider not in ("google",):
             self.send_error_json("Unsupported provider", HTTPStatus.BAD_REQUEST)
             return
 
-        redirect_uri = f"{base}/auth/v1/callback"
-        anon_key = get_supabase_anon_key(env)
-
         oauth_params = urlencode({
-            "provider":      provider,
-            "redirect_to":   "http://localhost:8000/api/auth/callback",
+            "provider":    provider,
+            "redirect_to": "http://localhost:8000/api/auth/callback",
         })
         supabase_oauth_url = f"{base}/auth/v1/authorize?{oauth_params}"
 
@@ -864,34 +863,89 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def handle_auth_callback(self, parsed):
         """
-        Supabase redirects here after OAuth.
-        Supabase sends access_token + refresh_token as URL fragment (#) which
-        JS can't pass to the server directly. Instead Supabase sends them as
-        query params when redirect_to is a server URL.
-        We store them as HttpOnly cookies and redirect to /.
-        """
-        params = parse_qs(parsed.query)
-        access_token  = params.get("access_token",  [None])[0]
-        refresh_token = params.get("refresh_token", [None])[0]
+        Supabase redirects here after OAuth. It always sends tokens as a URL
+        fragment (#access_token=...&refresh_token=...) which the server cannot
+        read — fragments are never sent in HTTP requests.
 
-        if not access_token:
-            # Fragment-based flow: redirect to a client-side handler page
-            self.send_response(HTTPStatus.FOUND)
-            self.send_header("Location", "/#auth-callback")
-            self.end_headers()
+        Strategy: serve a tiny HTML page that reads the fragment in JS and
+        immediately POSTs the tokens to /api/auth/session, which sets HttpOnly
+        cookies and redirects to /.
+        """
+        html = b"""<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Signing in...</title></head>
+<body>
+<script>
+(function () {
+  var hash = window.location.hash.slice(1);
+  if (!hash) { window.location.replace("/"); return; }
+  var params = {};
+  hash.split("&").forEach(function(part) {
+    var kv = part.split("=");
+    params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || "");
+  });
+  var access  = params["access_token"];
+  var refresh = params["refresh_token"];
+  if (!access) { window.location.replace("/"); return; }
+  fetch("/api/auth/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ access_token: access, refresh_token: refresh || "" })
+  }).then(function(r) {
+    if (r.ok) {
+      // Check if there is saved pre-auth state to restore
+      var saved = localStorage.getItem("preAuthState");
+      if (saved) {
+        window.location.replace("/?restore=1");
+      } else {
+        window.location.replace("/");
+      }
+    } else {
+      window.location.replace("/");
+    }
+  }).catch(function() { window.location.replace("/"); });
+})();
+</script>
+<p>Completing sign in...</p>
+</body>
+</html>"""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(html)))
+        self.end_headers()
+        self.wfile.write(html)
+
+    def handle_auth_session(self):
+        """
+        Receives { access_token, refresh_token } from the callback page JS
+        and stores them as HttpOnly cookies.
+        """
+        try:
+            body = parse_body(self)
+        except ValueError as exc:
+            self.send_error_json(str(exc))
             return
 
-        self.send_response(HTTPStatus.FOUND)
+        access_token  = str(body.get("access_token",  "") or "").strip()
+        refresh_token = str(body.get("refresh_token", "") or "").strip()
+
+        if not access_token:
+            self.send_error_json("access_token is required")
+            return
+
+        self.send_response(HTTPStatus.OK)
         self.send_header(
             "Set-Cookie",
             f"sb_access_token={access_token}; Path=/; HttpOnly; SameSite=Lax"
         )
-        self.send_header(
-            "Set-Cookie",
-            f"sb_refresh_token={refresh_token}; Path=/; HttpOnly; SameSite=Lax"
-        )
-        self.send_header("Location", "/")
+        if refresh_token:
+            self.send_header(
+                "Set-Cookie",
+                f"sb_refresh_token={refresh_token}; Path=/; HttpOnly; SameSite=Lax"
+            )
+        self.send_header("Content-Type", "application/json")
         self.end_headers()
+        self.wfile.write(b'{"ok":true}')
 
     def handle_auth_me(self):
         """Return the current user from session cookie, or 401."""

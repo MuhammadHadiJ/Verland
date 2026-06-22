@@ -95,11 +95,14 @@ function renderAutocomplete(places) {
     item.addEventListener("click", () => {
       searchInput.value = place.display_name;
       autocompleteDropdown.hidden = true;
-      state.selectedPlace = place;
       // Fix #11: always use place.lng (Python always returns "lng" not "lon")
       const lat = Number(place.lat);
       const lng = Number(place.lng);
-      selectMapLocation({ lat, lng });
+      selectMapLocation({ lat, lng }).then(() => {
+        // Set selectedPlace AFTER selectMapLocation so it isn't cleared
+        state.selectedPlace = place;
+        renderDetail();
+      });
       if (state.googleMap) {
         state.googleMap.setZoom(18);
         state.googleMap.panTo({ lat, lng });
@@ -166,6 +169,27 @@ async function init() {
     state.user = null;
   }
 
+  // Restore pre-auth state if we just came back from an OAuth redirect.
+  // Uses localStorage (survives cross-origin navigations unlike sessionStorage).
+  const saved = localStorage.getItem("preAuthState");
+  if (saved) {
+    localStorage.removeItem("preAuthState");
+    // Clean ?restore=1 from the URL without causing another page load
+    if (window.location.search.includes("restore=1")) {
+      window.history.replaceState({}, "", "/");
+    }
+    try {
+      const s = JSON.parse(saved);
+      if (s.selectedLocation) {
+        state.selectedLocation = s.selectedLocation;
+        state.selectedPlace    = s.selectedPlace || null;
+        state.selectedId       = s.selectedId    || null;
+        if (s.query) searchInput.value = s.query;
+        mapStatus.textContent = `${s.selectedLocation.lat}, ${s.selectedLocation.lng}`;
+      }
+    } catch (_) {}
+  }
+
   await loadProperties();
   renderList();
   renderDetail();
@@ -190,7 +214,7 @@ function loadGoogleMaps(apiKey) {
         const result = await api(`/api/location-reverse?lat=${lat}&lng=${lng}`);
         if (result.place) {
           state.selectedPlace = result.place;
-          renderDetail();
+          renderDetail(); // re-render now that we have an address
         }
       } catch (err) {
         console.warn("Reverse geocoding failed", err);
@@ -206,19 +230,25 @@ function loadGoogleMaps(apiKey) {
 }
 
 async function selectMapLocation(location, fallbackPoint = null) {
-  state.selectedLocation = {
-    lat: Number(Number(location.lat).toFixed(6)),
-    lng: Number(Number(location.lng).toFixed(6)),
-  };
-  if (
-    !state.selectedPlace ||
-    state.selectedPlace.lat !== state.selectedLocation.lat ||
-    state.selectedPlace.lng !== state.selectedLocation.lng
-  ) {
+  const newLat = Number(Number(location.lat).toFixed(6));
+  const newLng = Number(Number(location.lng).toFixed(6));
+
+  // Only clear selectedPlace if the location actually changed
+  const locationChanged =
+    !state.selectedLocation ||
+    state.selectedLocation.lat !== newLat ||
+    state.selectedLocation.lng !== newLng;
+
+  state.selectedLocation = { lat: newLat, lng: newLng };
+
+  if (locationChanged) {
+    state.selectedId = null;
+    // selectedPlace is cleared here; it will be set by the caller (autocomplete
+    // click or reverse geocode) once the place is resolved
     state.selectedPlace = null;
   }
-  state.selectedId = null;
-  mapStatus.textContent = `${state.selectedLocation.lat}, ${state.selectedLocation.lng}`;
+
+  mapStatus.textContent = `${newLat}, ${newLng}`;
   moveSelectedPin(fallbackPoint);
   await loadProperties();
   renderDetail();
@@ -241,7 +271,20 @@ function moveSelectedPin(fallbackPoint) {
 }
 
 async function loadProperties() {
-  const params = new URLSearchParams(new FormData(searchForm));
+  const formData = new FormData(searchForm);
+  const query = (formData.get("q") || "").trim();
+  const city  = (formData.get("city") || "").trim();
+
+  // Never show the whole DB unprompted.
+  // Only fetch if the user has pinned a location OR typed a real search query.
+  if (!state.selectedLocation && !query && !city) {
+    state.properties = [];
+    renderList();
+    renderDetail();
+    return;
+  }
+
+  const params = new URLSearchParams(formData);
   if (state.selectedLocation) {
     params.set("lat",       state.selectedLocation.lat);
     params.set("lng",       state.selectedLocation.lng);
@@ -250,7 +293,9 @@ async function loadProperties() {
   try {
     const result = await api(`/api/properties?${params.toString()}`);
     state.properties = result.properties;
-    if (!state.selectedId && state.properties.length) {
+    const selectionStillValid = state.selectedId &&
+      state.properties.find((p) => p.id === state.selectedId);
+    if (!selectionStillValid && state.properties.length) {
       state.selectedId = state.properties[0].id;
     }
     renderList();
@@ -392,6 +437,15 @@ function bindDetailEvents(propertyId) {
     } else {
       const sig = document.querySelector("#signInGoogle");
       if (sig) sig.addEventListener("click", () => {
+        // Save current search state so we can restore it after OAuth redirect.
+        // localStorage persists across the Google OAuth navigation (sessionStorage doesn't).
+        const saveState = {
+          query:            searchInput.value,
+          selectedLocation: state.selectedLocation,
+          selectedPlace:    state.selectedPlace,
+          selectedId:       state.selectedId,
+        };
+        localStorage.setItem("preAuthState", JSON.stringify(saveState));
         window.location.href = "/api/auth/signin?provider=google";
       });
     }
@@ -473,6 +527,9 @@ async function handleReviewSubmit(event, propertyId) {
     if (state.selectedPlace) {
       payload.place = state.selectedPlace;
     } else if (state.selectedLocation) {
+      // Fallback: raw coordinate click with no geocoded address.
+      // This will create a "Property at lat, lng" entry which is not ideal,
+      // but it's only reached when reverse geocoding failed entirely.
       payload.place = {
         lat:          state.selectedLocation.lat,
         lng:          state.selectedLocation.lng,
@@ -490,7 +547,7 @@ async function handleReviewSubmit(event, propertyId) {
   }
 
   try {
-    const url    = propertyId
+    const url = propertyId
       ? `/api/properties/${propertyId}/reviews`
       : "/api/properties/new/reviews";
     const result = await api(url, {
@@ -500,12 +557,39 @@ async function handleReviewSubmit(event, propertyId) {
 
     reviewDialog.close();
 
+    const savedProperty = result.property;
+
     if (!propertyId) {
-      state.selectedId = result.property.id;
-      await loadProperties();
+      // New property was created (or matched). Inject it directly into state
+      // so it shows up immediately without depending on the spatial radius
+      // search to find it (which can miss due to coordinate rounding).
+      const alreadyInList = state.properties.find((p) => p.id === savedProperty.id);
+      if (!alreadyInList) {
+        state.properties = [savedProperty, ...state.properties];
+      } else {
+        state.properties = state.properties.map((p) =>
+          p.id === savedProperty.id ? savedProperty : p
+        );
+      }
+      state.selectedId = savedProperty.id;
+
+      // Also update selectedLocation to the property's actual stored coordinates
+      // so subsequent spatial searches find it reliably.
+      state.selectedLocation = {
+        lat: Number(Number(savedProperty.latitude).toFixed(6)),
+        lng: Number(Number(savedProperty.longitude).toFixed(6)),
+      };
+      mapStatus.textContent = `${state.selectedLocation.lat}, ${state.selectedLocation.lng}`;
+
+      renderList();
+      renderDetail();
+
+      // Then do a background reload at a wider radius to pick up any nearby
+      // properties that should also appear, without blocking the UI.
+      loadPropertiesBackground();
     } else {
       state.properties = state.properties.map((p) =>
-        p.id === propertyId ? result.property : p
+        p.id === propertyId ? savedProperty : p
       );
       renderList();
       renderDetail();
@@ -517,6 +601,33 @@ async function handleReviewSubmit(event, propertyId) {
     } else {
       error.textContent = apiError.message;
     }
+  }
+}
+
+// Background reload — refreshes the property list without resetting selectedId
+async function loadPropertiesBackground() {
+  if (!state.selectedLocation) return; // nothing to sync without a pinned location
+
+  const params = new URLSearchParams(new FormData(searchForm));
+  params.set("lat",       state.selectedLocation.lat);
+  params.set("lng",       state.selectedLocation.lng);
+  params.set("radius_km", "0.075");
+
+  try {
+    const result = await api(`/api/properties?${params.toString()}`);
+    const currentId = state.selectedId;
+    const serverById = Object.fromEntries(result.properties.map((p) => [p.id, p]));
+    state.properties = state.properties.map((p) => serverById[p.id] || p);
+    for (const p of result.properties) {
+      if (!state.properties.find((s) => s.id === p.id)) {
+        state.properties.push(p);
+      }
+    }
+    state.selectedId = currentId;
+    renderList();
+    renderDetail();
+  } catch (_) {
+    // silent — UI already shows the review
   }
 }
 
