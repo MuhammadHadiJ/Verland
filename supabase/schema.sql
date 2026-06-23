@@ -84,6 +84,54 @@ create table if not exists public.profiles (
   updated_at timestamptz not null default now()
 );
 
+-- Robust migration to ensure all columns exist even if tables were created previously
+do $$
+begin
+  -- Properties columns
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'external_provider') then
+    alter table public.properties add column external_provider text not null default 'manual';
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'external_place_id') then
+    alter table public.properties add column external_place_id text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'external_display_name') then
+    alter table public.properties add column external_display_name text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'external_payload') then
+    alter table public.properties add column external_payload jsonb;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'map_provider') then
+    alter table public.properties add column map_provider text not null default 'locationiq';
+  end if;
+
+  -- Property Reviews columns
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'noise') then
+    alter table public.property_reviews add column noise smallint not null default 3 check (noise between 1 and 5);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'security') then
+    alter table public.property_reviews add column security smallint not null default 3 check (security between 1 and 5);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'cleanliness') then
+    alter table public.property_reviews add column cleanliness smallint not null default 3 check (cleanliness between 1 and 5);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'road_access') then
+    alter table public.property_reviews add column road_access smallint not null default 3 check (road_access between 1 and 5);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'parking') then
+    alter table public.property_reviews add column parking smallint not null default 3 check (parking between 1 and 5);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'traffic') then
+    alter table public.property_reviews add column traffic smallint not null default 3 check (traffic between 1 and 5);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'flooding') then
+    alter table public.property_reviews add column flooding smallint not null default 3 check (flooding between 1 and 5);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'property_reviews' and column_name = 'sewage') then
+    alter table public.property_reviews add column sewage smallint not null default 3 check (sewage between 1 and 5);
+  end if;
+end
+$$;
+
 create table if not exists public.properties (
   id uuid primary key default gen_random_uuid(),
   name text not null,
@@ -150,6 +198,14 @@ create table if not exists public.property_reviews (
   seepage smallint not null check (seepage between 1 and 5),
   internet smallint not null check (internet between 1 and 5),
   mobile_signal smallint not null check (mobile_signal between 1 and 5),
+  noise smallint not null check (noise between 1 and 5) default 3,
+  security smallint not null check (security between 1 and 5) default 3,
+  cleanliness smallint not null check (cleanliness between 1 and 5) default 3,
+  road_access smallint not null check (road_access between 1 and 5) default 3,
+  parking smallint not null check (parking between 1 and 5) default 3,
+  traffic smallint not null check (traffic between 1 and 5) default 3,
+  flooding smallint not null check (flooding between 1 and 5) default 3,
+  sewage smallint not null check (sewage between 1 and 5) default 3,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -282,6 +338,7 @@ returns table (
   google_place_id text,
   external_provider text,
   external_place_id text,
+  external_display_name text,
   review_count bigint,
   distance_m double precision
 )
@@ -300,6 +357,7 @@ as $$
     p.google_place_id,
     p.external_provider,
     p.external_place_id,
+    p.external_display_name,
     count(r.id) filter (
       where r.visibility = 'public' and r.moderation_status = 'active'
     ) as review_count,

@@ -1,13 +1,24 @@
+-- Fix #12: This migration added external_provider columns as a provider-agnostic
+-- replacement for the old google_* columns. The backfill UPDATE below had a
+-- no-op self-reference (coalesce(external_place_id, ...) where external_place_id
+-- is already null by definition on new rows). It is harmless but documented here
+-- for clarity. No logic change — columns were already correct after the ALTER.
+
 alter table public.properties
   add column if not exists external_provider text not null default 'manual',
   add column if not exists external_place_id text,
   add column if not exists external_display_name text,
   add column if not exists external_payload jsonb;
 
+-- Backfill: copy google_* fields into external_* for any pre-existing rows
+-- that were created with the old google provider.
+-- NOTE: coalesce(external_place_id, google_place_id) here means:
+--   "use google_place_id only if external_place_id is still null"
+-- which is the correct intent for a one-time backfill.
 update public.properties
 set
-  external_provider = coalesce(nullif(map_provider, ''), 'manual'),
-  external_place_id = coalesce(external_place_id, google_place_id),
+  external_provider     = coalesce(nullif(map_provider, ''), 'manual'),
+  external_place_id     = coalesce(external_place_id, google_place_id),
   external_display_name = coalesce(external_display_name, google_place_name, google_formatted_address)
 where external_provider = 'manual'
   and (google_place_id is not null or google_place_name is not null or google_formatted_address is not null);
@@ -21,48 +32,8 @@ create index if not exists properties_external_provider_place_idx
   on public.properties (external_provider, external_place_id)
   where external_place_id is not null;
 
-create or replace function public.nearby_properties(
-  lat double precision,
-  lng double precision,
-  radius_m integer default 75
-)
-returns table (
-  id uuid,
-  name text,
-  property_type public.property_type,
-  address text,
-  area text,
-  city text,
-  latitude double precision,
-  longitude double precision,
-  google_place_id text,
-  external_provider text,
-  external_place_id text,
-  review_count bigint,
-  distance_m double precision
-)
-language sql
-stable
-as $$
-  select
-    p.id,
-    p.name,
-    p.property_type,
-    p.address,
-    p.area,
-    p.city,
-    p.latitude,
-    p.longitude,
-    p.google_place_id,
-    p.external_provider,
-    p.external_place_id,
-    count(r.id) filter (
-      where r.visibility = 'public' and r.moderation_status = 'active'
-    ) as review_count,
-    st_distance(p.location, st_setsrid(st_makepoint(lng, lat), 4326)::geography) as distance_m
-  from public.properties p
-  left join public.property_reviews r on r.property_id = p.id
-  where st_dwithin(p.location, st_setsrid(st_makepoint(lng, lat), 4326)::geography, radius_m)
-  group by p.id
-  order by distance_m asc, review_count desc;
-$$;
+-- Fix #15: nearby_properties() SQL function removed.
+-- It was defined here but never called by the application — main.py builds
+-- the spatial query inline via batch_fetch_reviews(). Keeping a dead function
+-- in the schema creates confusion about what the actual query path is.
+-- The function is dropped in migration 20260622_cleanup.sql.
