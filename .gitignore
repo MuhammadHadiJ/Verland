@@ -3,3 +3,4 @@ Project Overview.txt
 *.sqlite3
 __pycache__/
 .vscode/
+CLAUDE.md
