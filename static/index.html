@@ -3,15 +3,28 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Real Estate Reality</title>
+    <title>Verland</title>
     <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="https://cdn.maptiler.com/maptiler-sdk-js/latest/maptiler-sdk.css">
+    <script>
+      (function () {
+        var pref = localStorage.getItem("theme") || "system";
+        var dark = pref === "dark" || (pref === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+        document.documentElement.setAttribute("data-theme-pref", pref);
+      })();
+    </script>
   </head>
   <body>
     <header class="app-header">
       <div>
-        <p class="eyebrow">Pakistan MVP</p>
-        <h1>Real Estate Reality</h1>
+        <p class="eyebrow">Pakistan</p>
+        <h1>Verland</h1>
       </div>
+      <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme">
+        <svg id="themeIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+        <span id="themeLabel"></span>
+      </button>
     </header>
 
     <main class="shell">
@@ -75,6 +88,7 @@
       </div>
     </dialog>
 
+    <script src="https://cdn.maptiler.com/maptiler-sdk-js/latest/maptiler-sdk.umd.min.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

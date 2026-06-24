@@ -51,6 +51,9 @@ NEIGHBORHOOD_FIELDS = [
     "traffic", "flooding", "sewage", "mobile_signal",
 ]
 
+# Fields with only two states (present/not) — "Mostly" prefix never applies
+BINARY_FIELDS = {"elevator", "parking", "internet"}
+
 PROPERTY_TYPES = {"apartment", "house", "plot", "commercial"}
 
 ROLE_VALUES = {
@@ -74,6 +77,20 @@ LOCATIONIQ_REVERSE_URL     = "https://api.locationiq.com/v1/reverse"
 
 # Neighbourhood spatial radius used for aggregation (metres)
 NEIGHBOURHOOD_RADIUS_M = 250
+
+# Coordinates used to bias LocationIQ autocomplete toward each city
+CITY_COORDS = {
+    "karachi":     (24.8607, 67.0011),
+    "lahore":      (31.5204, 74.3587),
+    "islamabad":   (33.6844, 73.0479),
+    "rawalpindi":  (33.5651, 73.0169),
+    "faisalabad":  (31.4504, 73.1350),
+    "peshawar":    (34.0150, 71.5805),
+    "quetta":      (30.1798, 66.9750),
+    "multan":      (30.1575, 71.5249),
+}
+# Default proximity when no city is selected — Karachi
+DEFAULT_PROXIMITY = CITY_COORDS["karachi"]
 
 # ---------------------------------------------------------------------------
 # Aggregation label map
@@ -137,6 +154,10 @@ def locationiq_key(env):
         or env.get("LocationIQ_API_Key")
         or env.get("LOCATIONIQ_KEY")
     )
+
+
+def maptiler_key(env):
+    return env.get("MAPTILER_API_KEY") or env.get("MAPTILER_KEY") or ""
 
 
 # ---------------------------------------------------------------------------
@@ -423,20 +444,23 @@ def parse_locationiq_place(place):
     }
 
 
-def locationiq_search(query, limit=6):
+def locationiq_search(query, limit=6, proximity=None):
     env = read_env()
     api_key = locationiq_key(env)
     if not api_key:
         raise ValueError("LOCATIONIQ_API_KEY is missing from .env")
 
+    lat, lng = proximity if proximity else DEFAULT_PROXIMITY
     params = {
-        "key":          api_key,
-        "q":            query,
-        "format":       "json",
-        "countrycodes": "pk",
+        "key":            api_key,
+        "q":              query,
+        "format":         "json",
+        "countrycodes":   "pk",
         "addressdetails": 1,
-        "namedetails":  1,
-        "limit":        limit,
+        "namedetails":    1,
+        "limit":          limit,
+        "lat":            lat,
+        "lon":            lng,
     }
     url = f"{LOCATIONIQ_AUTOCOMPLETE_URL}?{urlencode(params)}"
     req = Request(url, headers={"User-Agent": "RealEstateRealityMVP/0.1"})
@@ -456,29 +480,28 @@ def locationiq_search(query, limit=6):
 # ---------------------------------------------------------------------------
 def get_dominant_label(counts, field_id):
     """
-    Returns "Mostly X" when one option has the clear lead.
-    Returns a percentage breakdown string when tied.
-    Returns None when no data.
+    Returns "Mostly X" when one option has the clear lead across 2+ reviews.
+    Returns the plain label for binary fields or single-review cases.
+    Returns None when tied (frontend renders distribution from counts) or no data.
     """
     filtered = {k: v for k, v in counts.items() if v > 0}
     if not filtered:
         return None
 
+    total = sum(filtered.values())
     max_count = max(filtered.values())
     winners = [k for k, v in filtered.items() if v == max_count]
-
     labels = LABEL_MAP.get(field_id, {})
 
     if len(winners) > 1:
-        total = sum(filtered.values())
-        parts = []
-        for val in (5, 3, 1):
-            if val in filtered:
-                pct = round((filtered[val] / total) * 100)
-                parts.append(f"{labels.get(val, str(val))} {pct}%")
-        return ", ".join(parts)
+        # Tied — return None so the frontend renders a distribution from counts
+        return None
 
     label = labels.get(winners[0], str(winners[0]))
+    # Binary fields are facts, not majorities — skip "Mostly" prefix entirely
+    # Single review — no majority exists yet, just state the label
+    if field_id in BINARY_FIELDS or total == 1:
+        return label
     return f"Mostly {label}"
 
 
@@ -998,11 +1021,12 @@ class AppHandler(SimpleHTTPRequestHandler):
     def handle_config(self):
         env = read_env()
         self.send_json({
-            "hasLocationIqKey":      bool(locationiq_key(env)),
-            "supabaseUrl":           supabase_url(env),
-            "hasSupabasePassword":   bool(
+            "hasLocationIqKey":    bool(locationiq_key(env)),
+            "supabaseUrl":         supabase_url(env),
+            "hasSupabasePassword": bool(
                 env.get("SUPABASE_DB_PASSWORD") or env.get("DB_Password")
             ),
+            "maptilerApiKey":      maptiler_key(env),
         })
 
     # ------------------------------------------------------------------
@@ -1014,8 +1038,10 @@ class AppHandler(SimpleHTTPRequestHandler):
         if len(query) < 3:
             self.send_json({"places": []})
             return
+        city = clean_text(params.get("city", [""])[0], 50).lower()
+        proximity = CITY_COORDS.get(city) or DEFAULT_PROXIMITY
         try:
-            places = locationiq_search(query)
+            places = locationiq_search(query, proximity=proximity)
         except ValueError as exc:
             self.send_error_json(str(exc))
             return

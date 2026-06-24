@@ -49,6 +49,34 @@ const closeReviewDialog = document.querySelector("#closeReviewDialog");
 
 closeReviewDialog.addEventListener("click", () => reviewDialog.close());
 
+// ---------------------------------------------------------------------------
+// Theme toggle
+// ---------------------------------------------------------------------------
+const THEME_ICONS = {
+  light:  '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>',
+  dark:   '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
+  system: '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>',
+};
+const THEME_CYCLE = { system: "dark", dark: "light", light: "system" };
+
+function updateThemeButton() {
+  const pref = document.documentElement.getAttribute("data-theme-pref") || "system";
+  document.querySelector("#themeIcon").innerHTML = THEME_ICONS[pref];
+  document.querySelector("#themeLabel").textContent = pref.charAt(0).toUpperCase() + pref.slice(1);
+}
+
+document.querySelector("#themeToggle").addEventListener("click", () => {
+  const current = document.documentElement.getAttribute("data-theme-pref") || "system";
+  const next = THEME_CYCLE[current];
+  const isDark = next === "dark" || (next === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme", isDark ? "dark" : "light");
+  document.documentElement.setAttribute("data-theme-pref", next);
+  localStorage.setItem("theme", next);
+  updateThemeButton();
+});
+
+updateThemeButton();
+
 searchForm.addEventListener("submit", (event) => {
   event.preventDefault();
   autocompleteDropdown.hidden = true;
@@ -68,7 +96,9 @@ searchInput.addEventListener("input", () => {
   }
   debounceTimer = setTimeout(async () => {
     try {
-      const result = await api(`/api/location-search?q=${encodeURIComponent(query)}`);
+      const city = document.querySelector("#cityInput")?.value || "";
+      const qs = new URLSearchParams({ q: query, city });
+      const result = await api(`/api/location-search?${qs}`);
       renderAutocomplete(result.places);
     } catch (error) {
       console.error("Autocomplete error:", error);
@@ -104,8 +134,7 @@ function renderAutocomplete(places) {
         renderDetail();
       });
       if (state.googleMap) {
-        state.googleMap.setZoom(18);
-        state.googleMap.panTo({ lat, lng });
+        state.googleMap.flyTo({ center: [lng, lat], zoom: 18 });
       }
     });
     autocompleteDropdown.append(item);
@@ -169,6 +198,14 @@ async function init() {
     state.user = null;
   }
 
+  // Load map if a MapTiler key is configured
+  try {
+    const config = await api("/api/config");
+    if (config.maptilerApiKey) {
+      loadMapTiler(config.maptilerApiKey);
+    }
+  } catch (_) {}
+
   // Restore pre-auth state if we just came back from an OAuth redirect.
   // Uses localStorage (survives cross-origin navigations unlike sessionStorage).
   const saved = localStorage.getItem("preAuthState");
@@ -195,38 +232,36 @@ async function init() {
   renderDetail();
 }
 
-function loadGoogleMaps(apiKey) {
-  window.initGoogleMap = () => {
-    state.googleMap = new google.maps.Map(document.querySelector("#googleMap"), {
-      center: pakistanCenter,
-      zoom: 5,
-      mapTypeControl: false,
-      streetViewControl: false,
-      fullscreenControl: false,
-    });
+function loadMapTiler(apiKey) {
+  maptilersdk.config.apiKey = apiKey;
+  document.querySelector("#fallbackMap").hidden = true;
 
-    state.googleMap.addListener("click", async (event) => {
-      const lat = event.latLng.lat();
-      const lng = event.latLng.lng();
-      searchInput.value = "";
-      await selectMapLocation({ lat, lng });
-      try {
-        const result = await api(`/api/location-reverse?lat=${lat}&lng=${lng}`);
-        if (result.place) {
-          state.selectedPlace = result.place;
-          renderDetail(); // re-render now that we have an address
-        }
-      } catch (err) {
-        console.warn("Reverse geocoding failed", err);
+  state.googleMap = new maptilersdk.Map({
+    container: "googleMap",
+    style: maptilersdk.MapStyle.HYBRID,
+    center: [pakistanCenter.lng, pakistanCenter.lat],
+    zoom: 5,
+    navigationControl: false,
+    geolocateControl: false,
+    maptilerLogoControl: false,
+    attributionControl: { compact: true },
+  });
+
+  state.googleMap.on("click", async (event) => {
+    const lat = event.lngLat.lat;
+    const lng = event.lngLat.lng;
+    searchInput.value = "";
+    await selectMapLocation({ lat, lng });
+    try {
+      const result = await api(`/api/location-reverse?lat=${lat}&lng=${lng}`);
+      if (result.place) {
+        state.selectedPlace = result.place;
+        renderDetail();
       }
-    });
-  };
-
-  const script = document.createElement("script");
-  script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&callback=initGoogleMap`;
-  script.async = true;
-  script.defer = true;
-  document.head.append(script);
+    } catch (err) {
+      console.warn("Reverse geocoding failed", err);
+    }
+  });
 }
 
 async function selectMapLocation(location, fallbackPoint = null) {
@@ -256,11 +291,15 @@ async function selectMapLocation(location, fallbackPoint = null) {
 
 function moveSelectedPin(fallbackPoint) {
   if (state.googleMap) {
+    const { lat, lng } = state.selectedLocation;
     if (!state.googleMarker) {
-      state.googleMarker = new google.maps.Marker({ map: state.googleMap });
+      state.googleMarker = new maptilersdk.Marker({ color: "#991b1b" })
+        .setLngLat([lng, lat])
+        .addTo(state.googleMap);
+    } else {
+      state.googleMarker.setLngLat([lng, lat]);
     }
-    state.googleMarker.setPosition(state.selectedLocation);
-    state.googleMap.panTo(state.selectedLocation);
+    state.googleMap.flyTo({ center: [lng, lat] });
     return;
   }
   selectedPin.hidden = false;
@@ -468,23 +507,36 @@ function renderStats(stats, fields) {
   const html = fields.map(([key, label]) => {
     const s = stats[key];
     if (!s || s.total === 0) return "";
-    const dominant = s.dominant || "No data";
 
-    let dataValue = "";
-    if (dominant.startsWith("Mostly ")) {
-      dataValue = dominant.replace("Mostly ", "").toLowerCase();
+    let valueHtml;
+    if (s.dominant) {
+      // Clear winner — render as a single colored label
+      const dataValue = s.dominant.startsWith("Mostly ")
+        ? s.dominant.replace("Mostly ", "").toLowerCase()
+        : s.dominant.toLowerCase();
+      valueHtml = `
+        <span class="stat-dominant" data-field="${key}" data-value="${dataValue}">
+          ${escapeHtml(s.dominant)}
+        </span>`;
+    } else {
+      // Tied — render a row of colored count pills from raw counts
+      const parts = ["5", "3", "1"]
+        .filter(v => s.counts[v] > 0)
+        .map(v => {
+          const lbl = formatScore(key, Number(v));
+          const pct = Math.round((s.counts[v] / s.total) * 100);
+          const variant = v === "5" ? "good" : v === "1" ? "poor" : "";
+          return `<span class="dist-pill" data-variant="${variant}">${escapeHtml(lbl)} ${pct}%</span>`;
+        })
+        .join("");
+      valueHtml = `<span class="dist-row">${parts}</span>`;
     }
 
     return `
       <div class="stat-row">
         <span class="stat-label">${label}</span>
         <div class="stat-value-container">
-          <span class="stat-dominant"
-                data-field="${key}"
-                data-is-distribution="${dominant.includes('%')}"
-                data-value="${dataValue}">
-            ${escapeHtml(dominant)}
-          </span>
+          ${valueHtml}
           <span class="stat-count">${s.total} ${s.total === 1 ? "review" : "reviews"}</span>
         </div>
       </div>
