@@ -350,7 +350,7 @@ button {
 .detail-panel {
   overflow: auto;
   padding: 0;
-  background-color: #fff;
+  background-color: var(--panel);
   position: relative;
 }
 
@@ -393,13 +393,20 @@ button {
   gap: 12px;
 }
 
-.user-badge {
-  font-size: 0.8rem;
-  font-weight: 700;
-  color: var(--green);
-  background: #ecfdf5;
-  padding: 6px 12px;
-  border-radius: 999px;
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--green);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: default;
+  user-select: none;
 }
 
 .header-meta h2 {
@@ -427,6 +434,63 @@ button {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 20px;
+}
+
+/* Panel where one side has data but the other doesn't */
+.aggregation-panel--empty {
+  background: transparent;
+  border: 1.5px dashed var(--line);
+}
+
+/* Styled empty state inside a panel */
+.stats-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100px;
+  text-align: center;
+  gap: 6px;
+  padding: 16px;
+  color: var(--muted);
+}
+
+.stats-empty strong {
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.stats-empty p {
+  font-size: 0.8rem;
+  margin: 0;
+}
+
+/* Both panels empty — single full-width state replaces the grid */
+.aggregation-both-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  padding: 40px 24px;
+  text-align: center;
+  border: 1.5px dashed var(--line);
+  border-radius: 12px;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.aggregation-both-empty strong {
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.aggregation-both-empty p {
+  font-size: 0.85rem;
+  margin: 0;
+  max-width: 360px;
 }
 
 .aggregation-panel h3 {
@@ -623,6 +687,47 @@ button {
 .comment-date {
   font-size: 0.75rem;
   color: var(--muted);
+}
+
+.comment-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.delete-btn {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  opacity: 0.4;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.delete-btn:hover {
+  color: var(--red);
+  opacity: 1;
+}
+
+.danger-button {
+  border-radius: 8px;
+  min-height: 42px;
+  padding: 0 16px;
+  background: var(--red);
+  color: #fff;
+}
+
+.danger-button:hover {
+  opacity: 0.88;
+}
+
+.danger-button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .comment-scores-list {

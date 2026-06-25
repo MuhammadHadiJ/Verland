@@ -78,6 +78,21 @@
       </section>
     </main>
 
+    <dialog id="confirmDialog">
+      <div class="dialog-card">
+        <div class="dialog-header">
+          <h2>Delete review</h2>
+          <button class="icon-button" id="closeConfirmDialog" type="button" aria-label="Close">×</button>
+        </div>
+        <p style="color:var(--muted);font-size:0.9rem;margin-top:4px;">Are you sure? This cannot be undone.</p>
+        <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:24px;">
+          <button class="secondary-button" id="cancelDeleteBtn" type="button">Cancel</button>
+          <button class="danger-button" id="confirmDeleteBtn" type="button">Delete</button>
+        </div>
+        <p class="form-error" id="confirmDeleteError"></p>
+      </div>
+    </dialog>
+
     <dialog id="reviewDialog">
       <div class="dialog-card">
         <div class="dialog-header">

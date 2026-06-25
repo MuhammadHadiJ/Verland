@@ -262,6 +262,22 @@ function loadMapTiler(apiKey) {
       console.warn("Reverse geocoding failed", err);
     }
   });
+
+  // After the map tiles load, pan to any location that was restored from
+  // pre-auth state (set in init() before this event fires).
+  state.googleMap.once("load", () => {
+    if (state.selectedLocation) {
+      const { lat, lng } = state.selectedLocation;
+      if (!state.googleMarker) {
+        state.googleMarker = new maptilersdk.Marker({ color: "#991b1b" })
+          .setLngLat([lng, lat])
+          .addTo(state.googleMap);
+      } else {
+        state.googleMarker.setLngLat([lng, lat]);
+      }
+      state.googleMap.flyTo({ center: [lng, lat], zoom: 16 });
+    }
+  });
 }
 
 async function selectMapLocation(location, fallbackPoint = null) {
@@ -389,6 +405,43 @@ function renderList() {
 }
 
 // ---------------------------------------------------------------------------
+// Render: aggregation section (handles all data-presence combinations)
+// ---------------------------------------------------------------------------
+function renderAggregation(property) {
+  const hasProp  = statsHaveData(property.property_stats,    propertySpecificFields);
+  const hasNeigh = statsHaveData(property.neighborhood_stats, neighborhoodFields);
+
+  if (!hasProp && !hasNeigh) {
+    return `
+      <div class="aggregation-both-empty">
+        <strong>No data for this property yet</strong>
+        <p>Submit the first review to start building a picture of what it's like here.</p>
+      </div>
+    `;
+  }
+
+  const propPanel = `
+    <div class="aggregation-panel${!hasProp ? " aggregation-panel--empty" : ""}">
+      <h3>Property Conditions</h3>
+      <div class="stats-list">
+        ${renderStats(property.property_stats, propertySpecificFields)}
+      </div>
+    </div>
+  `;
+
+  const neighPanel = `
+    <div class="aggregation-panel${!hasNeigh ? " aggregation-panel--empty" : ""}">
+      <h3>Neighborhood Conditions</h3>
+      <div class="stats-list">
+        ${renderStats(property.neighborhood_stats, neighborhoodFields)}
+      </div>
+    </div>
+  `;
+
+  return `<div class="aggregation-grid">${propPanel}${neighPanel}</div>`;
+}
+
+// ---------------------------------------------------------------------------
 // Render: detail panel
 // ---------------------------------------------------------------------------
 function renderDetail() {
@@ -423,20 +476,7 @@ function renderDetail() {
       </div>
 
       <section class="aggregation-section">
-        <div class="aggregation-grid">
-          <div class="aggregation-panel">
-            <h3>Property Conditions</h3>
-            <div class="stats-list">
-              ${renderStats(property.property_stats, propertySpecificFields)}
-            </div>
-          </div>
-          <div class="aggregation-panel">
-            <h3>Neighborhood Conditions</h3>
-            <div class="stats-list">
-              ${renderStats(property.neighborhood_stats, neighborhoodFields)}
-            </div>
-          </div>
-        </div>
+        ${renderAggregation(property)}
       </section>
 
       <section class="panel" style="margin-top: 32px">
@@ -451,11 +491,16 @@ function renderDetail() {
   bindDetailEvents(property.id);
 }
 
+function getInitials(name) {
+  return (name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join("");
+}
+
 function renderAuthActions() {
   if (state.user) {
+    const initials = getInitials(state.user.name || state.user.email);
     return `
       <button class="primary-button" id="openReviewButton">Add Review</button>
-      <span class="user-badge">${escapeHtml(state.user.name)}</span>
+      <span class="user-avatar" title="${escapeHtml(state.user.name || state.user.email)}">${escapeHtml(initials)}</span>
       <button class="secondary-button" id="signOutBtn">Sign out</button>
     `;
   }
@@ -476,8 +521,6 @@ function bindDetailEvents(propertyId) {
     } else {
       const sig = document.querySelector("#signInGoogle");
       if (sig) sig.addEventListener("click", () => {
-        // Save current search state so we can restore it after OAuth redirect.
-        // localStorage persists across the Google OAuth navigation (sessionStorage doesn't).
         const saveState = {
           query:            searchInput.value,
           selectedLocation: state.selectedLocation,
@@ -499,10 +542,61 @@ async function handleSignOut() {
 }
 
 // ---------------------------------------------------------------------------
+// Delete review — trash icon opens confirmation dialog
+// ---------------------------------------------------------------------------
+const confirmDialog   = document.querySelector("#confirmDialog");
+const confirmDeleteBtn = document.querySelector("#confirmDeleteBtn");
+const cancelDeleteBtn  = document.querySelector("#cancelDeleteBtn");
+const closeConfirmDialog = document.querySelector("#closeConfirmDialog");
+const confirmDeleteError = document.querySelector("#confirmDeleteError");
+let pendingDeleteId = null;
+
+document.querySelector("#closeConfirmDialog").addEventListener("click", () => confirmDialog.close());
+cancelDeleteBtn.addEventListener("click", () => confirmDialog.close());
+confirmDialog.addEventListener("close", () => {
+  pendingDeleteId = null;
+  confirmDeleteError.textContent = "";
+  confirmDeleteBtn.textContent = "Delete";
+  confirmDeleteBtn.disabled = false;
+});
+
+confirmDeleteBtn.addEventListener("click", async () => {
+  if (!pendingDeleteId) return;
+  confirmDeleteBtn.textContent = "Deleting…";
+  confirmDeleteBtn.disabled = true;
+  confirmDeleteError.textContent = "";
+  try {
+    const result = await api(`/api/reviews/${pendingDeleteId}`, { method: "DELETE" });
+    const saved = result.property;
+    state.properties = state.properties.map((p) => p.id === saved.id ? saved : p);
+    confirmDialog.close();
+    renderList();
+    renderDetail();
+  } catch (err) {
+    confirmDeleteBtn.textContent = "Delete";
+    confirmDeleteBtn.disabled = false;
+    confirmDeleteError.textContent = err.message;
+  }
+});
+
+detailPanel.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-action='delete-start']");
+  if (!btn) return;
+  pendingDeleteId = btn.dataset.reviewId;
+  confirmDeleteError.textContent = "";
+  confirmDialog.showModal();
+});
+
+// ---------------------------------------------------------------------------
 // Render: aggregated stats
 // ---------------------------------------------------------------------------
+function statsHaveData(stats, fields) {
+  if (!stats) return false;
+  return fields.some(([key]) => stats[key] && stats[key].total > 0);
+}
+
 function renderStats(stats, fields) {
-  if (!stats) return '<p class="empty-copy">No data available.</p>';
+  if (!stats) return renderStatsEmpty();
 
   const html = fields.map(([key, label]) => {
     const s = stats[key];
@@ -543,7 +637,16 @@ function renderStats(stats, fields) {
     `;
   }).join("");
 
-  return html || '<p class="empty-copy">Insufficient data for this section.</p>';
+  return html || renderStatsEmpty();
+}
+
+function renderStatsEmpty() {
+  return `
+    <div class="stats-empty">
+      <strong>No data yet</strong>
+      <p>Be the first to submit a review for this property.</p>
+    </div>
+  `;
 }
 
 // ---------------------------------------------------------------------------
@@ -865,8 +968,12 @@ function renderComments(property) {
     return `<p class="empty-copy">No experiences shared for this property yet.</p>`;
   }
 
-  return property.comments.map((comment) => `
-    <article class="comment">
+  const TRASH = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>`;
+
+  return property.comments.map((comment) => {
+    const isOwn = state.user && comment.reviewer_id === state.user.id;
+    return `
+    <article class="comment" data-review-id="${escapeHtml(comment.id)}">
       <div class="comment-header">
         <strong>${escapeHtml(comment.reviewer_name)}</strong>
         <span class="comment-date">${new Date(comment.created_at).toLocaleDateString()}</span>
@@ -877,7 +984,6 @@ function renderComments(property) {
         ${comment.rent_range  ? `<span class="pill">Rent: ${escapeHtml(comment.rent_range)}</span>`  : ""}
         ${comment.hidden_costs ? `<span class="pill">Hidden: ${escapeHtml(comment.hidden_costs)}</span>` : ""}
       </div>
-
       <div class="comment-scores-list">
         ${allFields.map(([f, label]) => `
           <div class="score-pill" data-value="${comment.scores[f]}">
@@ -885,12 +991,17 @@ function renderComments(property) {
           </div>
         `).join("")}
       </div>
-
       ${comment.comment
         ? `<p class="comment-text">"${escapeHtml(comment.comment)}"</p>`
         : ""}
+      ${isOwn ? `
+        <div class="comment-actions">
+          <button class="delete-btn" data-action="delete-start" data-review-id="${escapeHtml(comment.id)}" aria-label="Delete review">${TRASH}</button>
+        </div>
+      ` : ""}
     </article>
-  `).join("");
+  `;
+  }).join("");
 }
 
 function formatScore(field, value) {

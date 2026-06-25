@@ -613,6 +613,7 @@ def property_summary(conn, property_row, reviews_by_id=None, nearby_reviews_by_i
     property_data["comments"] = [
         {
             "id":               str(r.get("id")),
+            "reviewer_id":      str(r.get("user_id")) if r.get("user_id") else None,
             "reviewer_name":    r.get("reviewer_name") or "Verified Contributor",
             "contributor_role": display_role(r.get("contributor_role")),
             "lived_period":     r.get("lived_period"),
@@ -856,6 +857,59 @@ class AppHandler(SimpleHTTPRequestHandler):
             return
 
         self.send_error_json("Not found", HTTPStatus.NOT_FOUND)
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+
+        if path.startswith("/api/reviews/"):
+            review_id = path.split("/")[-1]
+            self.handle_delete_review(review_id)
+            return
+
+        self.send_error_json("Not found", HTTPStatus.NOT_FOUND)
+
+    def handle_delete_review(self, review_id):
+        user_id = self._get_authenticated_user_id()
+        if not user_id:
+            self.send_error_json("Sign in to delete a review", HTTPStatus.UNAUTHORIZED)
+            return
+        try:
+            review_id = str(uuid.UUID(review_id))
+        except (ValueError, AttributeError):
+            self.send_error_json("Invalid review ID", HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            with connect() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        "SELECT user_id, property_id FROM public.property_reviews WHERE id = %s",
+                        (review_id,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        self.send_error_json("Review not found", HTTPStatus.NOT_FOUND)
+                        return
+                    if str(row["user_id"]) != user_id:
+                        self.send_error_json("Not your review", HTTPStatus.FORBIDDEN)
+                        return
+                    property_id = str(row["property_id"])
+                    cur.execute(
+                        "DELETE FROM public.property_reviews WHERE id = %s", (review_id,)
+                    )
+                    conn.commit()
+
+                    cur.execute("SELECT * FROM public.properties WHERE id = %s", (property_id,))
+                    prop_row = cur.fetchone()
+
+                # property_summary must run inside the with block while conn is open
+                if prop_row:
+                    summary = property_summary(conn, prop_row)
+                    self.send_json({"property": summary})
+                else:
+                    self.send_json({"ok": True})
+        except Exception as exc:
+            self.send_error_json(f"Delete failed: {exc}", HTTPStatus.INTERNAL_SERVER_ERROR)
 
     # ------------------------------------------------------------------
     # Auth endpoints (Fix #1 / Phase 3)
