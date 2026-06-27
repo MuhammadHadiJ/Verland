@@ -590,10 +590,13 @@ def property_summary(conn, property_row, reviews_by_id=None, nearby_reviews_by_i
         counts = aggregate_field(reviews, field)
         if counts is None:
             continue
+        field_total = sum(counts.values())
+        if field_total == 0:
+            continue
         property_stats[field] = {
             "dominant": get_dominant_label(counts, field),
             "counts":   counts,
-            "total":    len(reviews),
+            "total":    field_total,
         }
 
     # Aggregate neighbourhood fields
@@ -602,10 +605,13 @@ def property_summary(conn, property_row, reviews_by_id=None, nearby_reviews_by_i
         counts = aggregate_field(nearby_reviews, field)
         if counts is None:
             continue
+        field_total = sum(counts.values())
+        if field_total == 0:
+            continue
         neighborhood_stats[field] = {
             "dominant": get_dominant_label(counts, field),
             "counts":   counts,
-            "total":    len(nearby_reviews),
+            "total":    field_total,
         }
 
     property_data["property_stats"]    = property_stats
@@ -830,6 +836,9 @@ class AppHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/auth/signout":
             self.handle_auth_signout()
+            return
+        if path == "/api/neighbourhood-preview":
+            self.handle_neighbourhood_preview(parsed)
             return
         if path.startswith("/api/properties/"):
             property_id = path.split("/")[-1]
@@ -1235,6 +1244,56 @@ class AppHandler(SimpleHTTPRequestHandler):
                 self.send_error_json("Property not found", HTTPStatus.NOT_FOUND)
                 return
             self.send_json({"property": property_summary(conn, row)})
+
+    # ------------------------------------------------------------------
+    # Neighbourhood preview (for unregistered map locations)
+    # ------------------------------------------------------------------
+    def handle_neighbourhood_preview(self, parsed):
+        params = parse_qs(parsed.query)
+        try:
+            lat = float(params.get("lat", [None])[0])
+            lng = float(params.get("lng", [None])[0])
+        except (TypeError, ValueError):
+            self.send_error_json("lat and lng are required numbers")
+            return
+
+        with connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select r.*
+                    from public.property_reviews r
+                    join public.properties p on r.property_id = p.id
+                    where st_dwithin(
+                            p.location,
+                            st_setsrid(st_makepoint(%s, %s), 4326)::geography,
+                            %s
+                          )
+                      and r.visibility = 'public'
+                      and r.moderation_status = 'active'
+                    """,
+                    (lng, lat, NEIGHBOURHOOD_RADIUS_M),
+                )
+                nearby_reviews = [dict(row) for row in (cur.fetchall() or [])]
+
+        neighborhood_stats = {}
+        for field in NEIGHBORHOOD_FIELDS:
+            counts = aggregate_field(nearby_reviews, field)
+            if counts is None:
+                continue
+            field_total = sum(counts.values())
+            if field_total == 0:
+                continue
+            neighborhood_stats[field] = {
+                "dominant": get_dominant_label(counts, field),
+                "counts":   counts,
+                "total":    field_total,
+            }
+
+        self.send_json({
+            "review_count": len(nearby_reviews),
+            "neighborhood_stats": neighborhood_stats,
+        })
 
     # ------------------------------------------------------------------
     # Create property

@@ -30,6 +30,7 @@ const state = {
   selectedId: null,
   selectedLocation: null,
   selectedPlace: null,
+  neighbourhoodPreview: null, // { review_count, neighborhood_stats } for unregistered locations
   googleMap: null,
   googleMarker: null,
 };
@@ -134,7 +135,7 @@ function renderAutocomplete(places) {
         renderDetail();
       });
       if (state.googleMap) {
-        state.googleMap.flyTo({ center: [lng, lat], zoom: 18 });
+        state.googleMap.flyTo({ center: [lng, lat], zoom: 16 });
       }
     });
     autocompleteDropdown.append(item);
@@ -275,7 +276,7 @@ function loadMapTiler(apiKey) {
       } else {
         state.googleMarker.setLngLat([lng, lat]);
       }
-      state.googleMap.flyTo({ center: [lng, lat], zoom: 16 });
+      state.googleMap.flyTo({ center: [lng, lat], zoom: 15 });
     }
   });
 }
@@ -294,14 +295,26 @@ async function selectMapLocation(location, fallbackPoint = null) {
 
   if (locationChanged) {
     state.selectedId = null;
-    // selectedPlace is cleared here; it will be set by the caller (autocomplete
-    // click or reverse geocode) once the place is resolved
     state.selectedPlace = null;
+    state.neighbourhoodPreview = null;
   }
 
   mapStatus.textContent = `${newLat}, ${newLng}`;
   moveSelectedPin(fallbackPoint);
   await loadProperties();
+
+  // If no property was found at this point, fetch neighbourhood context so
+  // the empty state can show "X reviews within 250m" instead of a blank panel.
+  if (!state.selectedId) {
+    try {
+      state.neighbourhoodPreview = await api(
+        `/api/neighbourhood-preview?lat=${newLat}&lng=${newLng}`
+      );
+    } catch (_) {
+      state.neighbourhoodPreview = null;
+    }
+  }
+
   renderDetail();
 }
 
@@ -315,7 +328,7 @@ function moveSelectedPin(fallbackPoint) {
     } else {
       state.googleMarker.setLngLat([lng, lat]);
     }
-    state.googleMap.flyTo({ center: [lng, lat] });
+    state.googleMap.flyTo({ center: [lng, lat], zoom: Math.min(state.googleMap.getZoom(), 16) });
     return;
   }
   selectedPin.hidden = false;
@@ -821,9 +834,37 @@ function renderMapEmptyState() {
       <div class="meta-row" style="margin-bottom: 24px;">
         <span class="pill">New location</span>
       </div>
+      ${renderNeighbourhoodPreviewSection()}
+    </div>
+  `;
+}
+
+function renderNeighbourhoodPreviewSection() {
+  const preview = state.neighbourhoodPreview;
+  const hasNeigh = preview && statsHaveData(preview.neighborhood_stats, neighborhoodFields);
+
+  if (!hasNeigh) {
+    return `
       <div class="panel">
         <h3>No experiences shared here yet</h3>
         <p class="empty-copy">No one has reviewed this specific property yet. Sign in and be the first to share your observation.</p>
+      </div>
+    `;
+  }
+
+  const count = preview.review_count;
+  return `
+    <div class="panel" style="margin-bottom: 16px;">
+      <h3>No reviews for this property yet</h3>
+      <p class="empty-copy" style="margin-bottom:0">
+        But <strong>${count} ${count === 1 ? "review" : "reviews"}</strong> exist within 250 m.
+        Add yours to build a record for this specific address.
+      </p>
+    </div>
+    <div class="aggregation-panel">
+      <h3>Neighbourhood Conditions</h3>
+      <div class="stats-list">
+        ${renderStats(preview.neighborhood_stats, neighborhoodFields)}
       </div>
     </div>
   `;
