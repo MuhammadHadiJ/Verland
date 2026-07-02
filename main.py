@@ -21,38 +21,32 @@ ENV_PATH = BASE_DIR / ".env"
 # ---------------------------------------------------------------------------
 # API field name → DB column name
 REVIEW_DB_FIELDS = {
-    "electricity":   "electricity",
-    "water":         "water",
-    "gas":           "gas",
-    "maintenance":   "building_maintenance",   # API key differs from DB column
-    "elevator":      "elevator",
-    "structure":     "structure",
-    "seepage":       "seepage",
-    "internet":      "internet",
-    "mobile_signal": "mobile_signal",
-    "noise":         "noise",
-    "security":      "security",
-    "cleanliness":   "cleanliness",
-    "road_access":   "road_access",
-    "parking":       "parking",
-    "traffic":       "traffic",
-    "flooding":      "flooding",
-    "sewage":        "sewage",
+    "load_shedding":  "electricity",          # reuses electricity column; renamed at API level
+    "water_supply":   "water",                # reuses water column; renamed at API level
+    "gas":            "gas",
+    "maintenance":    "building_maintenance",
+    "elevator":       "elevator",
+    "parking":        "parking",
+    "standby_power":  "standby_power",
+    "noise":          "noise",
+    "security":       "security",
+    "cleanliness":    "cleanliness",
+    "traffic":        "traffic",
+    "flooding":       "flooding",
 }
 
 REVIEW_FIELDS = list(REVIEW_DB_FIELDS.keys())
 
 PROPERTY_SPECIFIC_FIELDS = [
-    "electricity", "water", "gas", "maintenance",
-    "elevator", "parking", "internet", "structure", "seepage",
+    "load_shedding", "water_supply", "gas", "maintenance",
+    "standby_power", "elevator", "parking",
 ]
 NEIGHBORHOOD_FIELDS = [
-    "noise", "security", "cleanliness", "road_access",
-    "traffic", "flooding", "sewage", "mobile_signal",
+    "noise", "security", "cleanliness", "traffic", "flooding",
 ]
 
 # Fields with only two states (present/not) — "Mostly" prefix never applies
-BINARY_FIELDS = {"elevator", "parking", "internet"}
+BINARY_FIELDS = {"elevator", "parking"}
 
 PROPERTY_TYPES = {"apartment", "house", "plot", "commercial"}
 
@@ -96,24 +90,19 @@ DEFAULT_PROXIMITY = CITY_COORDS["karachi"]
 # Aggregation label map
 # ---------------------------------------------------------------------------
 LABEL_MAP = {
-    "electricity":   {5: "Good",       3: "Fair",       1: "Poor"},
-    "water":         {5: "Good",       3: "Fair",       1: "Poor"},
-    "gas":           {5: "Good",       3: "Fair",       1: "Poor"},
-    "maintenance":   {5: "Good",       3: "Fair",       1: "Poor"},
-    "building_maintenance": {5: "Good", 3: "Fair",      1: "Poor"},
-    "elevator":      {5: "Present",                     1: "Not Present"},
-    "parking":       {5: "Present",                     1: "Not Present"},
-    "internet":      {5: "Available",                   1: "Not Available"},
-    "structure":     {5: "Good",       3: "Fair",       1: "Poor"},
-    "seepage":       {5: "Good",       3: "Fair",       1: "Poor"},
-    "cleanliness":   {5: "Good",       3: "Fair",       1: "Poor"},
-    "road_access":   {5: "Good",       3: "Fair",       1: "Poor"},
-    "mobile_signal": {5: "Good",       3: "Fair",       1: "Poor"},
-    "noise":         {5: "Low",        3: "Moderate",   1: "High"},
-    "security":      {5: "Safe",       3: "Average",    1: "Unsafe"},
-    "traffic":       {5: "Low",        3: "Moderate",   1: "High"},
-    "flooding":      {5: "None",       3: "Minor",      1: "Severe"},
-    "sewage":        {5: "None",       3: "Occasional", 1: "Frequent"},
+    "load_shedding":        {5: "Rare",        3: "Moderate",        1: "Frequent"},
+    "water_supply":         {5: "Reliable",    3: "Unreliable",      1: "Tanker dependent"},
+    "gas":                  {5: "Good",        3: "Fair",            1: "Poor"},
+    "maintenance":          {5: "Good",        3: "Fair",            1: "Poor"},
+    "building_maintenance": {5: "Good",        3: "Fair",            1: "Poor"},
+    "standby_power":        {5: "Generator",   3: "UPS",             1: "None"},
+    "elevator":             {5: "Present",                           1: "Not Present"},
+    "parking":              {5: "Present",                           1: "Not Present"},
+    "noise":                {5: "Low",         3: "Moderate",        1: "High"},
+    "security":             {5: "Safe",        3: "Average",         1: "Unsafe"},
+    "cleanliness":          {5: "Good",        3: "Fair",            1: "Poor"},
+    "traffic":              {5: "Low",         3: "Moderate",        1: "High"},
+    "flooding":             {5: "None",        3: "Minor",           1: "Severe"},
 }
 
 # ---------------------------------------------------------------------------
@@ -356,7 +345,7 @@ def validate_property(payload):
     return data
 
 
-BINARY_FIELDS = {"elevator", "internet", "parking"}
+BINARY_FIELDS = {"elevator", "parking"}
 
 
 def validate_review(payload):
@@ -365,10 +354,11 @@ def validate_review(payload):
     if role not in ROLE_VALUES.values():
         raise ValueError("contributor_role is invalid")
 
-    # Fix #10: server-side validation for lived_period
     lived_period = clean_text(payload.get("lived_period"), 120)
-    if not lived_period:
-        raise ValueError("lived_period (observed period) is required")
+    # Only residents and owners are expected to report a period
+    _period_required_roles = {"current_resident", "former_resident", "owner_or_landlord"}
+    if not lived_period and role in _period_required_roles:
+        raise ValueError("Observed period is required for residents and owners")
 
     data = {
         "contributor_role": role,
@@ -1046,15 +1036,17 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.send_error_json("Session expired", HTTPStatus.UNAUTHORIZED)
             return
 
+        meta = user.get("user_metadata") or {}
         self.send_json({
-            "id":       user.get("id"),
-            "email":    user.get("email"),
-            "name":     (
-                user.get("user_metadata", {}).get("full_name")
-                or user.get("user_metadata", {}).get("name")
+            "id":         user.get("id"),
+            "email":      user.get("email"),
+            "name":       (
+                meta.get("full_name")
+                or meta.get("name")
                 or user.get("email", "").split("@")[0]
             ),
-            "provider": user.get("app_metadata", {}).get("provider", "google"),
+            "provider":   user.get("app_metadata", {}).get("provider", "google"),
+            "avatar_url": meta.get("avatar_url") or meta.get("picture") or None,
         })
 
     def handle_auth_signout(self):
@@ -1471,12 +1463,11 @@ class AppHandler(SimpleHTTPRequestHandler):
                         (property_id, user_id, contributor_role, lived_period,
                          rent_range, hidden_costs, comment,
                          electricity, water, gas, building_maintenance,
-                         elevator, structure, seepage, internet, mobile_signal,
-                         noise, security, cleanliness, road_access, parking,
-                         traffic, flooding, sewage)
+                         elevator, parking, standby_power,
+                         noise, security, cleanliness, traffic, flooding)
                         values (%s,%s,%s,%s,%s,%s,%s,
-                                %s,%s,%s,%s,%s,%s,%s,%s,%s,
-                                %s,%s,%s,%s,%s,%s,%s,%s)
+                                %s,%s,%s,%s,%s,%s,%s,
+                                %s,%s,%s,%s,%s)
                         """,
                         (
                             property_id,
@@ -1486,23 +1477,18 @@ class AppHandler(SimpleHTTPRequestHandler):
                             data["rent_range"],
                             data["hidden_costs"],
                             data["comment"],
-                            data["electricity"],
-                            data["water"],
+                            data["load_shedding"],    # → electricity column
+                            data["water_supply"],     # → water column
                             data["gas"],
-                            data["maintenance"],   # mapped to building_maintenance col
+                            data["maintenance"],      # → building_maintenance column
                             data["elevator"],
-                            data["structure"],
-                            data["seepage"],
-                            data["internet"],
-                            data["mobile_signal"],
+                            data["parking"],
+                            data["standby_power"],
                             data["noise"],
                             data["security"],
                             data["cleanliness"],
-                            data["road_access"],
-                            data["parking"],
                             data["traffic"],
                             data["flooding"],
-                            data["sewage"],
                         ),
                     )
                     conn.commit()

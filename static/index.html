@@ -3,9 +3,11 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Verland</title>
+    <title>Verland — Real Property Reviews</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles.css">
-    <link rel="stylesheet" href="https://cdn.maptiler.com/maptiler-sdk-js/latest/maptiler-sdk.css">
     <script>
       (function () {
         var pref = localStorage.getItem("theme") || "system";
@@ -16,94 +18,160 @@
     </script>
   </head>
   <body>
-    <header class="app-header">
-      <div>
-        <p class="eyebrow">Pakistan</p>
-        <h1>Verland</h1>
-      </div>
-      <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme">
-        <svg id="themeIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
-        <span id="themeLabel"></span>
-      </button>
-    </header>
 
-    <main class="shell">
-      <aside class="sidebar" aria-label="Property discovery">
-        <form class="search-panel" id="searchForm" autocomplete="off">
-          <div class="autocomplete-container">
-            <label for="searchInput">
-              Search
-            </label>
-            <input id="searchInput" name="q" type="search" placeholder="Property, area, or street" aria-label="Search Properties">
-            <div id="autocompleteDropdown" class="autocomplete-dropdown" hidden></div>
+    <!-- ── RESULTS VIEW (always in document flow, revealed after search) ── -->
+    <div class="results-wrapper" id="resultsWrapper">
+
+      <header class="app-header">
+        <a class="brand" href="/" aria-label="Verland home">
+          <span class="brand-name">Verland</span>
+        </a>
+
+        <form class="header-search" id="searchForm" autocomplete="off">
+          <div class="header-search-inner">
+            <div class="autocomplete-container">
+              <div class="header-input-wrap">
+                <svg class="header-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <input
+                  id="searchInput"
+                  name="q"
+                  type="search"
+                  placeholder="Search property, area or street..."
+                  aria-label="Search properties"
+                >
+              </div>
+              <div id="autocompleteDropdown" class="autocomplete-dropdown" hidden></div>
+            </div>
+            <div class="header-city-wrap">
+              <select id="cityInput" name="city" aria-label="Filter by city">
+                <option value="">All cities</option>
+                <option value="Karachi">Karachi</option>
+                <option value="Lahore">Lahore</option>
+                <option value="Islamabad">Islamabad</option>
+                <option value="Rawalpindi">Rawalpindi</option>
+                <option value="Faisalabad">Faisalabad</option>
+                <option value="Peshawar">Peshawar</option>
+                <option value="Quetta">Quetta</option>
+                <option value="Multan">Multan</option>
+              </select>
+            </div>
+            <button type="submit" class="header-search-btn">Search</button>
           </div>
-          <label for="cityInput">
-            City
-            <select id="cityInput" name="city" aria-label="Select City">
-              <option value="">All Pakistan</option>
-              <option value="Karachi">Karachi</option>
-              <option value="Lahore">Lahore</option>
-              <option value="Islamabad">Islamabad</option>
-              <option value="Rawalpindi">Rawalpindi</option>
-              <option value="Faisalabad">Faisalabad</option>
-              <option value="Peshawar">Peshawar</option>
-              <option value="Quetta">Quetta</option>
-              <option value="Multan">Multan</option>
-            </select>
-          </label>
-          <button class="secondary-button" type="submit">Filter</button>
         </form>
 
-        <section class="map-panel" id="mapPanel" aria-label="Map discovery">
-          <div class="map-grid" id="fallbackMap"></div>
-          <div id="googleMap"></div>
-          <span class="pin selected-pin" id="selectedPin" hidden></span>
-          <div class="map-status" id="mapStatus">Click the map to find or add reviews at that location.</div>
-        </section>
-
-        <section>
-          <div class="section-title">
-            <h2>Properties</h2>
-            <span id="propertyCount">0</span>
-          </div>
-          <div class="property-list" id="propertyList"></div>
-        </section>
-      </aside>
-
-      <section class="detail-panel" id="detailPanel" aria-live="polite">
-        <div class="empty-state">
-          <h2>No property selected</h2>
-          <p>Start by searching for a property or clicking a specific location on the map to see reviews.</p>
+        <div class="header-right">
+          <div id="headerAuth" class="header-auth"></div>
+          <button class="theme-btn" id="themeToggle" type="button" aria-label="Toggle theme">
+            <svg id="themeIcon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+            <span id="themeLabel"></span>
+          </button>
         </div>
-      </section>
-    </main>
+      </header>
 
+      <main class="results-body">
+        <div class="results-content" id="detailPanel"></div>
+      </main>
+
+    </div>
+
+    <!-- ── HERO OVERLAY (position: fixed, covers everything initially) ── -->
+    <section class="hero" id="hero" aria-label="Verland search">
+
+      <!-- decorative orbs -->
+      <div class="hero-orb hero-orb-1" aria-hidden="true"></div>
+      <div class="hero-orb hero-orb-2" aria-hidden="true"></div>
+      <div class="hero-orb hero-orb-3" aria-hidden="true"></div>
+      <div class="hero-grid" aria-hidden="true"></div>
+
+      <nav class="hero-nav">
+        <div class="brand brand--hero">
+          <span class="brand-country">Pakistan</span>
+          <span class="brand-name">Verland</span>
+        </div>
+        <div id="heroAuth" class="hero-auth"></div>
+      </nav>
+
+      <div class="hero-body">
+        <p class="hero-eyebrow">Real property reviews · Pakistan</p>
+        <h1 class="hero-headline">Know the truth<br>before you move.</h1>
+        <p class="hero-sub">Honest, structured reviews from people who've actually lived there.</p>
+
+        <form class="hero-search-form" id="heroSearchForm" autocomplete="off">
+          <div class="hero-search-wrap">
+            <div class="hero-search-box">
+              <svg class="hero-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input
+                id="heroSearchInput"
+                name="q"
+                type="search"
+                placeholder="Search property, area or street..."
+                aria-label="Search properties"
+                autocomplete="off"
+              >
+              <div class="hero-city-divider" aria-hidden="true"></div>
+              <select id="heroCityInput" name="city" aria-label="Filter by city">
+                <option value="">All cities</option>
+                <option value="Karachi">Karachi</option>
+                <option value="Lahore">Lahore</option>
+                <option value="Islamabad">Islamabad</option>
+                <option value="Rawalpindi">Rawalpindi</option>
+                <option value="Faisalabad">Faisalabad</option>
+                <option value="Peshawar">Peshawar</option>
+                <option value="Quetta">Quetta</option>
+                <option value="Multan">Multan</option>
+              </select>
+              <button type="submit" class="hero-search-btn">Search</button>
+            </div>
+            <div id="heroAutocompleteDropdown" class="autocomplete-dropdown hero-dropdown" hidden></div>
+          </div>
+        </form>
+
+        <div class="hero-popular">
+          <span class="hero-popular-label">Popular</span>
+          <button type="button" class="city-chip" data-city="Karachi">Karachi</button>
+          <button type="button" class="city-chip" data-city="Lahore">Lahore</button>
+          <button type="button" class="city-chip" data-city="Islamabad">Islamabad</button>
+          <button type="button" class="city-chip" data-city="Peshawar">Peshawar</button>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Confirm delete dialog -->
     <dialog id="confirmDialog">
       <div class="dialog-card">
         <div class="dialog-header">
           <h2>Delete review</h2>
-          <button class="icon-button" id="closeConfirmDialog" type="button" aria-label="Close">×</button>
+          <button class="icon-btn" id="closeConfirmDialog" type="button" aria-label="Close">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </div>
-        <p style="color:var(--muted);font-size:0.9rem;margin-top:4px;">Are you sure? This cannot be undone.</p>
-        <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:24px;">
-          <button class="secondary-button" id="cancelDeleteBtn" type="button">Cancel</button>
-          <button class="danger-button" id="confirmDeleteBtn" type="button">Delete</button>
+        <p class="dialog-body">This review will be permanently removed. Are you sure?</p>
+        <div class="dialog-actions">
+          <button class="btn-secondary" id="cancelDeleteBtn" type="button">Cancel</button>
+          <button class="btn-danger" id="confirmDeleteBtn" type="button">Delete</button>
         </div>
         <p class="form-error" id="confirmDeleteError"></p>
       </div>
     </dialog>
 
+    <!-- Review form dialog -->
     <dialog id="reviewDialog">
       <div class="dialog-card">
         <div class="dialog-header">
-          <h2>Submit structured review</h2>
-          <button class="icon-button" id="closeReviewDialog" type="button" aria-label="Close">×</button>
+          <h2>Share your experience</h2>
+          <button class="icon-btn" id="closeReviewDialog" type="button" aria-label="Close">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </div>
         <div id="reviewFormContainer"></div>
       </div>
     </dialog>
 
-    <script src="https://cdn.maptiler.com/maptiler-sdk-js/latest/maptiler-sdk.umd.min.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

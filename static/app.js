@@ -1,54 +1,72 @@
+// ---------------------------------------------------------------------------
+// Field definitions
+// ---------------------------------------------------------------------------
 const propertySpecificFields = [
-  ["electricity",  "Electricity availability"],
-  ["water",        "Water availability"],
-  ["gas",          "Gas availability"],
-  ["maintenance",  "Maintenance quality"],
-  ["elevator",     "Elevator"],
-  ["parking",      "Parking"],
-  ["internet",     "Fiber Internet"],
-  ["structure",    "Building structure"],
-  ["seepage",      "Seepage/Dampness"],
+  ["load_shedding",  "Load shedding"],
+  ["water_supply",   "Water supply"],
+  ["gas",            "Gas availability"],
+  ["maintenance",    "Maintenance quality"],
+  ["standby_power",  "Standby power (building)"],
+  ["elevator",       "Elevator"],
+  ["parking",        "Parking"],
 ];
 
 const neighborhoodFields = [
   ["security",     "Street security"],
-  ["noise",        "Noise levels"],
+  ["noise",        "Background noise"],
   ["traffic",      "Traffic congestion"],
   ["cleanliness",  "Cleanliness"],
   ["flooding",     "Rain flooding"],
-  ["sewage",       "Sewage system"],
-  ["road_access",  "Road access"],
-  ["mobile_signal","Mobile signal"],
 ];
 
 const allFields = [...propertySpecificFields, ...neighborhoodFields];
-const pakistanCenter = { lat: 30.3753, lng: 69.3451 };
 
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
 const state = {
-  user: null,           // { name, id, email, provider } — set from /api/auth/me
-  properties: [],
-  selectedId: null,
-  selectedLocation: null,
-  selectedPlace: null,
-  neighbourhoodPreview: null, // { review_count, neighborhood_stats } for unregistered locations
-  googleMap: null,
-  googleMarker: null,
+  user:                 null,
+  properties:           [],
+  selectedId:           null,
+  selectedLocation:     null,
+  selectedPlace:        null,
+  neighbourhoodPreview: null,
 };
 
-const propertyList      = document.querySelector("#propertyList");
-const propertyCount     = document.querySelector("#propertyCount");
-const detailPanel       = document.querySelector("#detailPanel");
-const searchForm        = document.querySelector("#searchForm");
-const searchInput       = document.querySelector("#searchInput");
+// ---------------------------------------------------------------------------
+// DOM references
+// ---------------------------------------------------------------------------
+const detailPanel          = document.querySelector("#detailPanel");
+const resultsWrapper       = document.querySelector("#resultsWrapper");
+const searchForm           = document.querySelector("#searchForm");
+const searchInput          = document.querySelector("#searchInput");
+const cityInput            = document.querySelector("#cityInput");
 const autocompleteDropdown = document.querySelector("#autocompleteDropdown");
-const mapPanel          = document.querySelector("#mapPanel");
-const selectedPin       = document.querySelector("#selectedPin");
-const mapStatus         = document.querySelector("#mapStatus");
-const reviewDialog      = document.querySelector("#reviewDialog");
-const reviewFormContainer = document.querySelector("#reviewFormContainer");
-const closeReviewDialog = document.querySelector("#closeReviewDialog");
+const hero                 = document.querySelector("#hero");
+const heroSearchForm       = document.querySelector("#heroSearchForm");
+const heroSearchInput      = document.querySelector("#heroSearchInput");
+const heroCityInput        = document.querySelector("#heroCityInput");
+const heroDropdown         = document.querySelector("#heroAutocompleteDropdown");
+const reviewDialog         = document.querySelector("#reviewDialog");
+const reviewFormContainer  = document.querySelector("#reviewFormContainer");
+const closeReviewDialog    = document.querySelector("#closeReviewDialog");
+const confirmDialog        = document.querySelector("#confirmDialog");
+const confirmDeleteBtn     = document.querySelector("#confirmDeleteBtn");
+const cancelDeleteBtn      = document.querySelector("#cancelDeleteBtn");
+const closeConfirmDialog   = document.querySelector("#closeConfirmDialog");
+const confirmDeleteError   = document.querySelector("#confirmDeleteError");
 
-closeReviewDialog.addEventListener("click", () => reviewDialog.close());
+// ---------------------------------------------------------------------------
+// Hero exit
+// ---------------------------------------------------------------------------
+let heroExited = false;
+
+function exitHero() {
+  if (heroExited) return;
+  heroExited = true;
+  hero.classList.add("hidden");
+  resultsWrapper.classList.add("visible");
+}
 
 // ---------------------------------------------------------------------------
 // Theme toggle
@@ -68,8 +86,8 @@ function updateThemeButton() {
 
 document.querySelector("#themeToggle").addEventListener("click", () => {
   const current = document.documentElement.getAttribute("data-theme-pref") || "system";
-  const next = THEME_CYCLE[current];
-  const isDark = next === "dark" || (next === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  const next    = THEME_CYCLE[current];
+  const isDark  = next === "dark" || (next === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
   document.documentElement.setAttribute("data-theme", isDark ? "dark" : "light");
   document.documentElement.setAttribute("data-theme-pref", next);
   localStorage.setItem("theme", next);
@@ -78,102 +96,47 @@ document.querySelector("#themeToggle").addEventListener("click", () => {
 
 updateThemeButton();
 
-searchForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  autocompleteDropdown.hidden = true;
-  loadProperties();
+// ---------------------------------------------------------------------------
+// Dialog handlers
+// ---------------------------------------------------------------------------
+closeReviewDialog.addEventListener("click", () => reviewDialog.close());
+closeConfirmDialog.addEventListener("click", () => confirmDialog.close());
+cancelDeleteBtn.addEventListener("click", () => confirmDialog.close());
+confirmDialog.addEventListener("close", () => {
+  pendingDeleteId = null;
+  confirmDeleteError.textContent = "";
+  confirmDeleteBtn.textContent = "Delete";
+  confirmDeleteBtn.disabled = false;
 });
 
-// ---------------------------------------------------------------------------
-// Autocomplete
-// ---------------------------------------------------------------------------
-let debounceTimer;
-searchInput.addEventListener("input", () => {
-  clearTimeout(debounceTimer);
-  const query = searchInput.value.trim();
-  if (query.length < 3) {
-    autocompleteDropdown.hidden = true;
-    return;
-  }
-  debounceTimer = setTimeout(async () => {
-    try {
-      const city = document.querySelector("#cityInput")?.value || "";
-      const qs = new URLSearchParams({ q: query, city });
-      const result = await api(`/api/location-search?${qs}`);
-      renderAutocomplete(result.places);
-    } catch (error) {
-      console.error("Autocomplete error:", error);
-    }
-  }, 300);
-});
+let pendingDeleteId = null;
 
-function renderAutocomplete(places) {
-  if (!places || !places.length) {
-    autocompleteDropdown.hidden = true;
-    return;
-  }
-  autocompleteDropdown.innerHTML = "";
-  autocompleteDropdown.hidden = false;
-
-  for (const place of places) {
-    const item = document.createElement("button");
-    item.className = "autocomplete-item";
-    item.type = "button";
-    item.innerHTML = `
-      <strong>${escapeHtml(place.name)}</strong>
-      <span>${escapeHtml(place.display_name)}</span>
-    `;
-    item.addEventListener("click", () => {
-      searchInput.value = place.display_name;
-      autocompleteDropdown.hidden = true;
-      // Fix #11: always use place.lng (Python always returns "lng" not "lon")
-      const lat = Number(place.lat);
-      const lng = Number(place.lng);
-      selectMapLocation({ lat, lng }).then(() => {
-        // Set selectedPlace AFTER selectMapLocation so it isn't cleared
-        state.selectedPlace = place;
-        renderDetail();
-      });
-      if (state.googleMap) {
-        state.googleMap.flyTo({ center: [lng, lat], zoom: 16 });
-      }
-    });
-    autocompleteDropdown.append(item);
-  }
-}
-
-document.addEventListener("click", (event) => {
-  if (!searchForm.contains(event.target)) {
-    autocompleteDropdown.hidden = true;
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Map
-// ---------------------------------------------------------------------------
-mapPanel.addEventListener("click", async (event) => {
-  if (event.target.id === "googleMap" || state.googleMap) return;
-  const rect = mapPanel.getBoundingClientRect();
-  const x = (event.clientX - rect.left) / rect.width;
-  const y = (event.clientY - rect.top) / rect.height;
-  const lat = 37.1 - y * 13.5;
-  const lng = 60.8 + x * 16.7;
-
-  searchInput.value = "";
-  await selectMapLocation(
-    { lat, lng },
-    { x: event.clientX - rect.left, y: event.clientY - rect.top }
-  );
-
+confirmDeleteBtn.addEventListener("click", async () => {
+  if (!pendingDeleteId) return;
+  confirmDeleteBtn.textContent = "Deleting…";
+  confirmDeleteBtn.disabled = true;
+  confirmDeleteError.textContent = "";
   try {
-    const result = await api(`/api/location-reverse?lat=${lat}&lng=${lng}`);
-    if (result.place) {
-      state.selectedPlace = result.place;
-      renderDetail();
-    }
+    const result = await api(`/api/reviews/${pendingDeleteId}`, { method: "DELETE" });
+    const saved = result.property;
+    state.properties = state.properties.map((p) => p.id === saved.id ? saved : p);
+    confirmDialog.close();
+    renderDetail();
   } catch (err) {
-    console.warn("Reverse geocoding failed", err);
+    confirmDeleteBtn.textContent = "Delete";
+    confirmDeleteBtn.disabled = false;
+    confirmDeleteError.textContent = err.message;
   }
+});
+
+detailPanel.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-action='delete-start']");
+  if (!btn) return;
+  pendingDeleteId = btn.dataset.reviewId;
+  confirmDeleteError.textContent = "";
+  confirmDeleteBtn.textContent = "Delete";
+  confirmDeleteBtn.disabled = false;
+  confirmDialog.showModal();
 });
 
 // ---------------------------------------------------------------------------
@@ -188,31 +151,128 @@ async function api(path, options = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Init — restore session from server, then load data
+// Autocomplete — shared setup
+// ---------------------------------------------------------------------------
+function setupAutocomplete(inputEl, dropdownEl, getCityValue, onSelect) {
+  let timer;
+
+  inputEl.addEventListener("input", () => {
+    clearTimeout(timer);
+    const q = inputEl.value.trim();
+    if (q.length < 3) { dropdownEl.hidden = true; return; }
+    timer = setTimeout(async () => {
+      try {
+        const city = getCityValue();
+        const result = await api(`/api/location-search?${new URLSearchParams({ q, city })}`);
+        renderDropdown(result.places, dropdownEl, onSelect);
+      } catch {}
+    }, 300);
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!inputEl.closest("form").contains(e.target)) dropdownEl.hidden = true;
+  });
+}
+
+function renderDropdown(places, dropdownEl, onSelect) {
+  if (!places?.length) { dropdownEl.hidden = true; return; }
+  dropdownEl.innerHTML = "";
+  dropdownEl.hidden = false;
+
+  for (const place of places) {
+    const btn = document.createElement("button");
+    btn.className = "autocomplete-item";
+    btn.type = "button";
+    btn.innerHTML = `<strong>${escapeHtml(place.name)}</strong><span>${escapeHtml(place.display_name)}</span>`;
+    btn.addEventListener("click", () => { dropdownEl.hidden = true; onSelect(place); });
+    dropdownEl.append(btn);
+  }
+}
+
+// Hero autocomplete
+setupAutocomplete(
+  heroSearchInput,
+  heroDropdown,
+  () => heroCityInput.value,
+  (place) => {
+    heroSearchInput.value = place.display_name;
+    searchInput.value     = place.display_name;
+    cityInput.value       = heroCityInput.value;
+    exitHero();
+    selectLocation({ lat: Number(place.lat), lng: Number(place.lng) }).then(() => {
+      state.selectedPlace = place;
+      renderDetail();
+    });
+  }
+);
+
+// Header autocomplete
+setupAutocomplete(
+  searchInput,
+  autocompleteDropdown,
+  () => cityInput.value,
+  (place) => {
+    searchInput.value = place.display_name;
+    autocompleteDropdown.hidden = true;
+    selectLocation({ lat: Number(place.lat), lng: Number(place.lng) }).then(() => {
+      state.selectedPlace = place;
+      renderDetail();
+    });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Hero form submit
+// ---------------------------------------------------------------------------
+heroSearchForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  heroDropdown.hidden = true;
+  searchInput.value   = heroSearchInput.value;
+  cityInput.value     = heroCityInput.value;
+  exitHero();
+  loadProperties();
+});
+
+// Popular city chips
+document.querySelectorAll(".city-chip").forEach((chip) => {
+  chip.addEventListener("click", () => {
+    const city = chip.dataset.city;
+    heroCityInput.value = city;
+    cityInput.value     = city;
+    heroSearchInput.value = "";
+    searchInput.value     = "";
+    exitHero();
+    loadProperties();
+  });
+});
+
+// Header form submit
+searchForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  autocompleteDropdown.hidden = true;
+  state.selectedLocation = null;
+  state.selectedPlace    = null;
+  state.selectedId       = null;
+  state.neighbourhoodPreview = null;
+  loadProperties();
+});
+
+// ---------------------------------------------------------------------------
+// Init
 // ---------------------------------------------------------------------------
 async function init() {
-  // Check if the user has an active session (real Supabase auth)
   try {
     const me = await api("/api/auth/me");
-    state.user = me;  // { id, email, name, provider }
+    state.user = me;
   } catch (_) {
     state.user = null;
   }
+  renderHeaderAuth();
 
-  // Load map if a MapTiler key is configured
-  try {
-    const config = await api("/api/config");
-    if (config.maptilerApiKey) {
-      loadMapTiler(config.maptilerApiKey);
-    }
-  } catch (_) {}
-
-  // Restore pre-auth state if we just came back from an OAuth redirect.
-  // Uses localStorage (survives cross-origin navigations unlike sessionStorage).
+  // Restore pre-auth state after OAuth redirect
   const saved = localStorage.getItem("preAuthState");
   if (saved) {
     localStorage.removeItem("preAuthState");
-    // Clean ?restore=1 from the URL without causing another page load
     if (window.location.search.includes("restore=1")) {
       window.history.replaceState({}, "", "/");
     }
@@ -222,70 +282,88 @@ async function init() {
         state.selectedLocation = s.selectedLocation;
         state.selectedPlace    = s.selectedPlace || null;
         state.selectedId       = s.selectedId    || null;
-        if (s.query) searchInput.value = s.query;
-        mapStatus.textContent = `${s.selectedLocation.lat}, ${s.selectedLocation.lng}`;
+        if (s.query) {
+          searchInput.value     = s.query;
+          heroSearchInput.value = s.query;
+        }
+        exitHero();
+        await loadProperties();
+        renderDetail();
+        return;
       }
     } catch (_) {}
   }
+}
 
-  await loadProperties();
-  renderList();
+// ---------------------------------------------------------------------------
+// Auth rendering
+// ---------------------------------------------------------------------------
+function getInitials(name) {
+  return (name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join("");
+}
+
+function avatarHtml(user, cssClass) {
+  if (user.avatar_url) {
+    return `<img src="${escapeHtml(user.avatar_url)}" class="${cssClass}" alt="${escapeHtml(user.name || user.email)}" title="${escapeHtml(user.name || user.email)}" referrerpolicy="no-referrer">`;
+  }
+  return `<span class="${cssClass}" title="${escapeHtml(user.name || user.email)}">${escapeHtml(getInitials(user.name || user.email))}</span>`;
+}
+
+function renderHeaderAuth() {
+  const slot = document.querySelector("#headerAuth");
+  if (slot) {
+    if (state.user) {
+      slot.innerHTML = `
+        ${avatarHtml(state.user, "user-avatar")}
+        <button class="text-button" id="headerSignOut">Sign out</button>
+      `;
+      slot.querySelector("#headerSignOut").addEventListener("click", handleSignOut);
+    } else {
+      slot.innerHTML = `<button class="secondary-button" id="headerSignIn">Sign in</button>`;
+      slot.querySelector("#headerSignIn").addEventListener("click", doSignIn);
+    }
+  }
+
+  const heroSlot = document.querySelector("#heroAuth");
+  if (heroSlot) {
+    if (state.user) {
+      heroSlot.innerHTML = `
+        ${avatarHtml(state.user, "hero-avatar")}
+        <button class="hero-signout" id="heroSignOut">Sign out</button>
+      `;
+      heroSlot.querySelector("#heroSignOut").addEventListener("click", handleSignOut);
+    } else {
+      heroSlot.innerHTML = `<button class="hero-sign-in" id="heroSignIn">Sign in</button>`;
+      heroSlot.querySelector("#heroSignIn").addEventListener("click", doSignIn);
+    }
+  }
+}
+
+function doSignIn() {
+  const saveState = {
+    query:            searchInput.value,
+    selectedLocation: state.selectedLocation,
+    selectedPlace:    state.selectedPlace,
+    selectedId:       state.selectedId,
+  };
+  localStorage.setItem("preAuthState", JSON.stringify(saveState));
+  window.location.href = "/api/auth/signin?provider=google";
+}
+
+async function handleSignOut() {
+  try { await api("/api/auth/signout"); } catch (_) {}
+  state.user = null;
+  renderHeaderAuth();
   renderDetail();
 }
 
-function loadMapTiler(apiKey) {
-  maptilersdk.config.apiKey = apiKey;
-  document.querySelector("#fallbackMap").hidden = true;
-
-  state.googleMap = new maptilersdk.Map({
-    container: "googleMap",
-    style: maptilersdk.MapStyle.HYBRID,
-    center: [pakistanCenter.lng, pakistanCenter.lat],
-    zoom: 5,
-    navigationControl: false,
-    geolocateControl: false,
-    maptilerLogoControl: false,
-    attributionControl: { compact: true },
-  });
-
-  state.googleMap.on("click", async (event) => {
-    const lat = event.lngLat.lat;
-    const lng = event.lngLat.lng;
-    searchInput.value = "";
-    await selectMapLocation({ lat, lng });
-    try {
-      const result = await api(`/api/location-reverse?lat=${lat}&lng=${lng}`);
-      if (result.place) {
-        state.selectedPlace = result.place;
-        renderDetail();
-      }
-    } catch (err) {
-      console.warn("Reverse geocoding failed", err);
-    }
-  });
-
-  // After the map tiles load, pan to any location that was restored from
-  // pre-auth state (set in init() before this event fires).
-  state.googleMap.once("load", () => {
-    if (state.selectedLocation) {
-      const { lat, lng } = state.selectedLocation;
-      if (!state.googleMarker) {
-        state.googleMarker = new maptilersdk.Marker({ color: "#991b1b" })
-          .setLngLat([lng, lat])
-          .addTo(state.googleMap);
-      } else {
-        state.googleMarker.setLngLat([lng, lat]);
-      }
-      state.googleMap.flyTo({ center: [lng, lat], zoom: 15 });
-    }
-  });
-}
-
-async function selectMapLocation(location, fallbackPoint = null) {
+// ---------------------------------------------------------------------------
+// Location selection (no map)
+// ---------------------------------------------------------------------------
+async function selectLocation(location) {
   const newLat = Number(Number(location.lat).toFixed(6));
   const newLng = Number(Number(location.lng).toFixed(6));
 
-  // Only clear selectedPlace if the location actually changed
   const locationChanged =
     !state.selectedLocation ||
     state.selectedLocation.lat !== newLat ||
@@ -294,17 +372,13 @@ async function selectMapLocation(location, fallbackPoint = null) {
   state.selectedLocation = { lat: newLat, lng: newLng };
 
   if (locationChanged) {
-    state.selectedId = null;
-    state.selectedPlace = null;
+    state.selectedId           = null;
+    state.selectedPlace        = null;
     state.neighbourhoodPreview = null;
   }
 
-  mapStatus.textContent = `${newLat}, ${newLng}`;
-  moveSelectedPin(fallbackPoint);
   await loadProperties();
 
-  // If no property was found at this point, fetch neighbourhood context so
-  // the empty state can show "X reviews within 250m" instead of a blank panel.
   if (!state.selectedId) {
     try {
       state.neighbourhoodPreview = await api(
@@ -314,40 +388,18 @@ async function selectMapLocation(location, fallbackPoint = null) {
       state.neighbourhoodPreview = null;
     }
   }
-
-  renderDetail();
 }
 
-function moveSelectedPin(fallbackPoint) {
-  if (state.googleMap) {
-    const { lat, lng } = state.selectedLocation;
-    if (!state.googleMarker) {
-      state.googleMarker = new maptilersdk.Marker({ color: "#991b1b" })
-        .setLngLat([lng, lat])
-        .addTo(state.googleMap);
-    } else {
-      state.googleMarker.setLngLat([lng, lat]);
-    }
-    state.googleMap.flyTo({ center: [lng, lat], zoom: Math.min(state.googleMap.getZoom(), 16) });
-    return;
-  }
-  selectedPin.hidden = false;
-  if (fallbackPoint) {
-    selectedPin.style.left = `${fallbackPoint.x}px`;
-    selectedPin.style.top  = `${fallbackPoint.y}px`;
-  }
-}
-
+// ---------------------------------------------------------------------------
+// Load properties
+// ---------------------------------------------------------------------------
 async function loadProperties() {
   const formData = new FormData(searchForm);
-  const query = (formData.get("q") || "").trim();
-  const city  = (formData.get("city") || "").trim();
+  const query    = (formData.get("q") || "").trim();
+  const city     = (formData.get("city") || "").trim();
 
-  // Never show the whole DB unprompted.
-  // Only fetch if the user has pinned a location OR typed a real search query.
   if (!state.selectedLocation && !query && !city) {
     state.properties = [];
-    renderList();
     renderDetail();
     return;
   }
@@ -358,313 +410,424 @@ async function loadProperties() {
     params.set("lng",       state.selectedLocation.lng);
     params.set("radius_km", "0.075");
   }
+
   try {
     const result = await api(`/api/properties?${params.toString()}`);
     state.properties = result.properties;
+
     const selectionStillValid = state.selectedId &&
       state.properties.find((p) => p.id === state.selectedId);
-    if (!selectionStillValid && state.properties.length) {
-      state.selectedId = state.properties[0].id;
+
+    if (!selectionStillValid) {
+      // Auto-select only when there's exactly one result
+      state.selectedId = state.properties.length === 1 ? state.properties[0].id : null;
     }
-    renderList();
+
     renderDetail();
   } catch (err) {
     console.error("Failed to load properties", err);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Render: sidebar list
-// ---------------------------------------------------------------------------
-function renderList() {
-  propertyCount.textContent = String(state.properties.length);
-  propertyList.innerHTML = "";
+async function loadPropertiesBackground() {
+  if (!state.selectedLocation) return;
+  const params = new URLSearchParams(new FormData(searchForm));
+  params.set("lat",       state.selectedLocation.lat);
+  params.set("lng",       state.selectedLocation.lng);
+  params.set("radius_km", "0.075");
 
-  if (!state.properties.length) {
-    propertyList.innerHTML = `
-      <p class="empty-copy">
-        ${state.selectedLocation
-          ? "No exact property near this point yet."
-          : "Click the exact real estate on the map."}
-      </p>
-    `;
-    return;
-  }
-
-  for (const property of state.properties) {
-    const button = document.createElement("button");
-    button.className = "property-item";
-    button.type = "button";
-    button.setAttribute("aria-current", String(property.id === state.selectedId));
-    // Fix #8: "reviews" not "accounts"
-    const reviewWord = property.review_count === 1 ? "review" : "reviews";
-    button.innerHTML = `
-      <strong>${escapeHtml(property.name)}</strong>
-      <span>${escapeHtml(property.address)}</span>
-      <span class="meta-row">
-        <span class="pill">${escapeHtml(property.property_type)}</span>
-        <span class="pill">${escapeHtml(property.area)}, ${escapeHtml(property.city)}</span>
-        <span class="pill">${property.review_count} ${reviewWord}</span>
-        ${property.distance_km == null ? "" : `<span class="pill">${property.distance_km} km away</span>`}
-      </span>
-    `;
-    button.addEventListener("click", () => {
-      state.selectedId = property.id;
-      renderList();
-      renderDetail();
-    });
-    propertyList.append(button);
-  }
+  try {
+    const result    = await api(`/api/properties?${params.toString()}`);
+    const currentId = state.selectedId;
+    const byId      = Object.fromEntries(result.properties.map((p) => [p.id, p]));
+    state.properties = state.properties.map((p) => byId[p.id] || p);
+    for (const p of result.properties) {
+      if (!state.properties.find((s) => s.id === p.id)) state.properties.push(p);
+    }
+    state.selectedId = currentId;
+    renderDetail();
+  } catch (_) {}
 }
 
 // ---------------------------------------------------------------------------
-// Render: aggregation section (handles all data-presence combinations)
-// ---------------------------------------------------------------------------
-function renderAggregation(property) {
-  const hasProp  = statsHaveData(property.property_stats,    propertySpecificFields);
-  const hasNeigh = statsHaveData(property.neighborhood_stats, neighborhoodFields);
-
-  if (!hasProp && !hasNeigh) {
-    return `
-      <div class="aggregation-both-empty">
-        <strong>No data for this property yet</strong>
-        <p>Submit the first review to start building a picture of what it's like here.</p>
-      </div>
-    `;
-  }
-
-  const propPanel = `
-    <div class="aggregation-panel${!hasProp ? " aggregation-panel--empty" : ""}">
-      <h3>Property Conditions</h3>
-      <div class="stats-list">
-        ${renderStats(property.property_stats, propertySpecificFields)}
-      </div>
-    </div>
-  `;
-
-  const neighPanel = `
-    <div class="aggregation-panel${!hasNeigh ? " aggregation-panel--empty" : ""}">
-      <h3>Neighborhood Conditions</h3>
-      <div class="stats-list">
-        ${renderStats(property.neighborhood_stats, neighborhoodFields)}
-      </div>
-    </div>
-  `;
-
-  return `<div class="aggregation-grid">${propPanel}${neighPanel}</div>`;
-}
-
-// ---------------------------------------------------------------------------
-// Render: detail panel
+// Render: master results function
 // ---------------------------------------------------------------------------
 function renderDetail() {
   const property = state.properties.find((p) => p.id === state.selectedId);
-  if (!property) {
-    detailPanel.innerHTML = renderMapEmptyState();
+
+  if (property) {
+    detailPanel.innerHTML = renderPropertyDetail(property);
+    bindDetailEvents(property.id);
+    return;
+  }
+
+  if (state.properties.length > 1) {
+    detailPanel.innerHTML = renderPropertyList();
+    return;
+  }
+
+  if (state.selectedLocation || state.properties.length === 0 && (searchInput.value.trim() || cityInput.value)) {
+    detailPanel.innerHTML = renderEmptyLocationState();
     bindDetailEvents(null);
     return;
   }
 
-  // Fix #8: "reviews" not "accounts"
-  const reviewWord = property.review_count === 1 ? "review" : "reviews";
+  detailPanel.innerHTML = "";
+}
 
-  detailPanel.innerHTML = `
-    <header class="sticky-property-header">
-      <div class="header-content">
-        <div class="header-meta">
-          <h2>${escapeHtml(property.name)}</h2>
-          <p>${escapeHtml(property.address)}</p>
-        </div>
-        <div class="header-actions">
-          ${renderAuthActions()}
+function renderPropertyList() {
+  const reviewWord = (n) => `${n} ${n === 1 ? "review" : "reviews"}`;
+  const cards = state.properties.map((p) => `
+    <button class="property-card" data-id="${escapeHtml(p.id)}" type="button">
+      <div class="property-card-body">
+        <span class="property-card-name">${escapeHtml(p.name)}</span>
+        <span class="property-card-addr">${escapeHtml(p.address)}</span>
+        <div class="property-card-meta">
+          <span class="pill">${escapeHtml(p.property_type)}</span>
+          <span class="pill">${escapeHtml(p.area)}, ${escapeHtml(p.city)}</span>
+          <span class="pill">${reviewWord(p.review_count)}</span>
+          ${p.distance_km != null ? `<span class="pill">${p.distance_km} km away</span>` : ""}
         </div>
       </div>
-    </header>
+      <svg class="property-card-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>
+  `).join("");
 
-    <div class="property-page-content">
-      <div class="meta-row" style="margin-bottom: 24px;">
-        <span class="pill">${escapeHtml(property.property_type)}</span>
-        <span class="pill">${escapeHtml(property.area)}, ${escapeHtml(property.city)}</span>
-        <span class="pill">${property.review_count} individual ${reviewWord}</span>
+  return `
+    <p class="results-count">${state.properties.length} properties found</p>
+    <div class="property-cards">${cards}</div>
+  `;
+}
+
+function renderPropertyDetail(property) {
+  const reviewWord    = property.review_count === 1 ? "review" : "reviews";
+  const hasMultiple   = state.properties.length > 1;
+  const propStatsHtml = statsHaveData(property.property_stats, propertySpecificFields)
+    ? renderStats(property.property_stats, propertySpecificFields)
+    : `<p class="stats-col-empty">No data yet</p>`;
+  const neighStatsHtml = statsHaveData(property.neighborhood_stats, neighborhoodFields)
+    ? renderStats(property.neighborhood_stats, neighborhoodFields)
+    : `<p class="stats-col-empty">No data yet</p>`;
+
+  return `
+    ${hasMultiple ? `
+    <div class="detail-back-row">
+      <button class="back-btn" id="backToListBtn" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        All results
+      </button>
+    </div>` : ""}
+
+    <div class="detail-title-row">
+      <div class="detail-title">
+        <h2>${escapeHtml(property.name)}</h2>
+        <p>${escapeHtml(property.address)}</p>
       </div>
+      <div class="detail-actions">
+        ${renderAuthActions()}
+      </div>
+    </div>
 
-      <section class="aggregation-section">
-        ${renderAggregation(property)}
-      </section>
+    <div class="property-meta-row">
+      <span class="pill">${escapeHtml(property.property_type)}</span>
+      <span class="pill">${escapeHtml(property.area)}, ${escapeHtml(property.city)}</span>
+      <span class="pill">${property.review_count} ${reviewWord}</span>
+    </div>
 
-      <section class="panel" style="margin-top: 32px">
-        <h3>Individual Experiences</h3>
-        <div class="comments-list">
-          ${renderComments(property)}
+    <div class="stats-columns">
+      <div class="stats-col">
+        <div class="stats-col-header">
+          <span class="stats-col-title">Property Conditions</span>
         </div>
-      </section>
+        <div class="stats-col-body">${propStatsHtml}</div>
+      </div>
+      <div class="stats-col">
+        <div class="stats-col-header">
+          <span class="stats-col-title">Neighbourhood</span>
+        </div>
+        <div class="stats-col-body">${neighStatsHtml}</div>
+      </div>
+    </div>
+
+    <div class="experiences-section">
+      <div class="experiences-heading">Individual Experiences</div>
+      <div class="comments-list">
+        ${renderComments(property)}
+      </div>
     </div>
   `;
-
-  bindDetailEvents(property.id);
 }
 
-function getInitials(name) {
-  return (name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join("");
+function renderEmptyLocationState() {
+  const name    = state.selectedPlace ? state.selectedPlace.name : null;
+  const address = state.selectedPlace
+    ? state.selectedPlace.display_name
+    : state.selectedLocation
+    ? `${state.selectedLocation.lat}, ${state.selectedLocation.lng}`
+    : null;
+
+  if (!state.selectedLocation && !searchInput.value.trim() && !cityInput.value) {
+    return "";
+  }
+
+  const preview    = state.neighbourhoodPreview;
+  const hasNeigh   = preview && statsHaveData(preview.neighborhood_stats, neighborhoodFields);
+  const neighHtml  = hasNeigh
+    ? renderStats(preview.neighborhood_stats, neighborhoodFields)
+    : "";
+
+  const noPropertyMsg = state.properties.length === 0 && !state.selectedLocation
+    ? "No properties matched your search. Try a different area or city."
+    : "No property on record at this exact address.";
+
+  const nearbyNote = hasNeigh
+    ? `But <strong>${preview.review_count} ${preview.review_count === 1 ? "review" : "reviews"}</strong> exist within 250 m — add yours to build a record for this specific address.`
+    : "Be the first to share your experience here.";
+
+  return `
+    ${name ? `
+    <div class="detail-title-row" style="margin-bottom:16px;">
+      <div class="detail-title">
+        <h2>${escapeHtml(name)}</h2>
+        ${address ? `<p>${escapeHtml(address)}</p>` : ""}
+      </div>
+      <div class="detail-actions">${renderAuthActions()}</div>
+    </div>
+    <div class="property-meta-row"><span class="pill">New location</span></div>
+    ` : ""}
+
+    <p class="empty-copy" style="margin-bottom:16px;">${noPropertyMsg} ${nearbyNote}</p>
+
+    ${hasNeigh ? `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+      <div class="stats-col">
+        <div class="stats-col-header"><span class="stats-col-title">Neighbourhood</span></div>
+        <div class="stats-col-body">${neighHtml}</div>
+      </div>
+    </div>` : ""}
+  `;
 }
 
+// ---------------------------------------------------------------------------
+// Render helpers
+// ---------------------------------------------------------------------------
 function renderAuthActions() {
   if (state.user) {
-    const initials = getInitials(state.user.name || state.user.email);
-    return `
-      <button class="primary-button" id="openReviewButton">Add Review</button>
-      <span class="user-avatar" title="${escapeHtml(state.user.name || state.user.email)}">${escapeHtml(initials)}</span>
-      <button class="secondary-button" id="signOutBtn">Sign out</button>
-    `;
+    return `<button class="primary-button" id="openReviewButton">Add Review</button>`;
   }
-  return `
-    <button class="secondary-button" id="signInGoogle">
-      Sign in with Google
-    </button>
-  `;
+  return `<button class="secondary-button" id="signInGoogle">Sign in to review</button>`;
 }
 
 function bindDetailEvents(propertyId) {
   setTimeout(() => {
+    const backToList = document.querySelector("#backToListBtn");
+    if (backToList) {
+      backToList.addEventListener("click", () => {
+        state.selectedId = null;
+        detailPanel.innerHTML = renderPropertyList();
+        bindListEvents();
+      });
+    }
+
     if (state.user) {
       const btn = document.querySelector("#openReviewButton");
       if (btn) btn.addEventListener("click", () => openReviewPopup(propertyId));
-      const out = document.querySelector("#signOutBtn");
-      if (out) out.addEventListener("click", handleSignOut);
     } else {
       const sig = document.querySelector("#signInGoogle");
-      if (sig) sig.addEventListener("click", () => {
-        const saveState = {
-          query:            searchInput.value,
-          selectedLocation: state.selectedLocation,
-          selectedPlace:    state.selectedPlace,
-          selectedId:       state.selectedId,
-        };
-        localStorage.setItem("preAuthState", JSON.stringify(saveState));
-        window.location.href = "/api/auth/signin?provider=google";
-      });
+      if (sig) sig.addEventListener("click", doSignIn);
     }
   }, 50);
 }
 
-async function handleSignOut() {
-  try { await api("/api/auth/signout"); } catch (_) {}
-  state.user = null;
-  renderDetail();
-  renderList();
+function bindListEvents() {
+  setTimeout(() => {
+    document.querySelectorAll(".property-card").forEach((card) => {
+      card.addEventListener("click", () => {
+        state.selectedId = card.dataset.id;
+        const property = state.properties.find((p) => p.id === state.selectedId);
+        if (property) {
+          detailPanel.innerHTML = renderPropertyDetail(property);
+          bindDetailEvents(property.id);
+          detailPanel.scrollTop = 0;
+        }
+      });
+    });
+  }, 50);
 }
 
 // ---------------------------------------------------------------------------
-// Delete review — trash icon opens confirmation dialog
-// ---------------------------------------------------------------------------
-const confirmDialog   = document.querySelector("#confirmDialog");
-const confirmDeleteBtn = document.querySelector("#confirmDeleteBtn");
-const cancelDeleteBtn  = document.querySelector("#cancelDeleteBtn");
-const closeConfirmDialog = document.querySelector("#closeConfirmDialog");
-const confirmDeleteError = document.querySelector("#confirmDeleteError");
-let pendingDeleteId = null;
-
-document.querySelector("#closeConfirmDialog").addEventListener("click", () => confirmDialog.close());
-cancelDeleteBtn.addEventListener("click", () => confirmDialog.close());
-confirmDialog.addEventListener("close", () => {
-  pendingDeleteId = null;
-  confirmDeleteError.textContent = "";
-  confirmDeleteBtn.textContent = "Delete";
-  confirmDeleteBtn.disabled = false;
-});
-
-confirmDeleteBtn.addEventListener("click", async () => {
-  if (!pendingDeleteId) return;
-  confirmDeleteBtn.textContent = "Deleting…";
-  confirmDeleteBtn.disabled = true;
-  confirmDeleteError.textContent = "";
-  try {
-    const result = await api(`/api/reviews/${pendingDeleteId}`, { method: "DELETE" });
-    const saved = result.property;
-    state.properties = state.properties.map((p) => p.id === saved.id ? saved : p);
-    confirmDialog.close();
-    renderList();
-    renderDetail();
-  } catch (err) {
-    confirmDeleteBtn.textContent = "Delete";
-    confirmDeleteBtn.disabled = false;
-    confirmDeleteError.textContent = err.message;
-  }
-});
-
-detailPanel.addEventListener("click", (event) => {
-  const btn = event.target.closest("[data-action='delete-start']");
-  if (!btn) return;
-  pendingDeleteId = btn.dataset.reviewId;
-  confirmDeleteError.textContent = "";
-  confirmDialog.showModal();
-});
-
-// ---------------------------------------------------------------------------
-// Render: aggregated stats
+// Stats rendering — field-label-first agg rows
 // ---------------------------------------------------------------------------
 function statsHaveData(stats, fields) {
   if (!stats) return false;
   return fields.some(([key]) => stats[key] && stats[key].total > 0);
 }
 
+function statSentiment(field, dataValue) {
+  const GOOD = new Set(["good", "safe", "low", "present", "rare", "reliable", "generator"]);
+  const BAD  = new Set(["poor", "unsafe", "high", "stairs", "not present", "frequent", "tanker dependent"]);
+  if (GOOD.has(dataValue)) return "good";
+  if (BAD.has(dataValue))  return "bad";
+  if (field === "flooding"      && dataValue === "none") return "good";
+  if (field === "standby_power" && dataValue === "none") return "bad";
+  if ((field === "elevator" || field === "parking") && dataValue === "none") return "bad";
+  return "neutral";
+}
+
 function renderStats(stats, fields) {
   if (!stats) return renderStatsEmpty();
 
-  const html = fields.map(([key, label]) => {
+  const rows = fields.map(([key, label]) => {
     const s = stats[key];
     if (!s || s.total === 0) return "";
 
-    let valueHtml;
     if (s.dominant) {
-      // Clear winner — render as a single colored label
       const dataValue = s.dominant.startsWith("Mostly ")
         ? s.dominant.replace("Mostly ", "").toLowerCase()
         : s.dominant.toLowerCase();
-      valueHtml = `
-        <span class="stat-dominant" data-field="${key}" data-value="${dataValue}">
-          ${escapeHtml(s.dominant)}
-        </span>`;
+      const maxCount  = Math.max(...["5","3","1"].map(v => s.counts[v] || 0));
+      const pct       = s.total > 0 ? Math.round(maxCount / s.total * 100) : 0;
+      const sentiment = statSentiment(key, dataValue);
+      return `
+        <div class="agg-row">
+          <span class="agg-field">${escapeHtml(label)}</span>
+          <div class="agg-bar-track">
+            <div class="agg-bar-fill" data-sentiment="${sentiment}" style="width:${pct}%"></div>
+          </div>
+          <span class="agg-value" data-sentiment="${sentiment}">${escapeHtml(s.dominant)}</span>
+        </div>`;
     } else {
-      // Tied — render a row of colored count pills from raw counts
-      const parts = ["5", "3", "1"]
-        .filter(v => s.counts[v] > 0)
-        .map(v => {
-          const lbl = formatScore(key, Number(v));
-          const pct = Math.round((s.counts[v] / s.total) * 100);
-          const variant = v === "5" ? "good" : v === "1" ? "poor" : "";
-          return `<span class="dist-pill" data-variant="${variant}">${escapeHtml(lbl)} ${pct}%</span>`;
-        })
-        .join("");
-      valueHtml = `<span class="dist-row">${parts}</span>`;
+      const pills = ["5","3","1"].filter(v => s.counts[v] > 0).map(v => {
+        const lbl     = formatScore(key, Number(v));
+        const pct     = Math.round((s.counts[v] / s.total) * 100);
+        const variant = v === "5" ? "good" : v === "1" ? "poor" : "";
+        return `<span class="dist-pill" data-variant="${variant}">${escapeHtml(lbl)} ${pct}%</span>`;
+      }).join("");
+      return `
+        <div class="agg-row is-tied">
+          <span class="agg-field">${escapeHtml(label)}</span>
+          <div class="agg-pills">${pills}</div>
+        </div>`;
     }
-
-    return `
-      <div class="stat-row">
-        <span class="stat-label">${label}</span>
-        <div class="stat-value-container">
-          ${valueHtml}
-          <span class="stat-count">${s.total} ${s.total === 1 ? "review" : "reviews"}</span>
-        </div>
-      </div>
-    `;
   }).join("");
 
-  return html || renderStatsEmpty();
+  return rows || renderStatsEmpty();
 }
 
 function renderStatsEmpty() {
+  return `<p class="stats-col-empty">No data yet</p>`;
+}
+
+// ---------------------------------------------------------------------------
+// Review cards
+// ---------------------------------------------------------------------------
+function renderComments(property) {
+  if (!property.comments || !property.comments.length) {
+    return `<p class="empty-copy">No experiences shared for this property yet.</p>`;
+  }
+
+  const TRASH = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>`;
+
+  return property.comments.map((comment) => {
+    const isOwn       = state.user && comment.reviewer_id === state.user.id;
+    const propScores  = propertySpecificFields.map(([f, label]) => scorePillHtml(f, label, comment.scores[f])).join("");
+    const neighScores = neighborhoodFields.map(([f, label])     => scorePillHtml(f, label, comment.scores[f])).join("");
+
+    return `
+    <article class="comment-card" data-review-id="${escapeHtml(comment.id)}">
+      <div class="comment-header">
+        <div class="comment-identity">
+          <strong class="comment-reviewer">${escapeHtml(comment.reviewer_name)}</strong>
+          <span class="comment-role-badge">${escapeHtml(comment.contributor_role)}</span>
+        </div>
+        <div class="comment-meta-right">
+          <span class="comment-date">${new Date(comment.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</span>
+          ${isOwn ? `<button class="delete-btn" data-action="delete-start" data-review-id="${escapeHtml(comment.id)}" aria-label="Delete review" title="Delete review">${TRASH}</button>` : ""}
+        </div>
+      </div>
+
+      ${(comment.lived_period || comment.rent_range || comment.hidden_costs) ? `
+      <div class="meta-row">
+        ${comment.lived_period  ? `<span class="pill">Period: ${escapeHtml(comment.lived_period)}</span>` : ""}
+        ${comment.rent_range    ? `<span class="pill">Rent: ${escapeHtml(comment.rent_range)}</span>` : ""}
+        ${comment.hidden_costs  ? `<span class="pill">Hidden costs: ${escapeHtml(comment.hidden_costs)}</span>` : ""}
+      </div>` : ""}
+
+      <div class="comment-scores">
+        <div class="scores-group">
+          <span class="scores-group-label">Property</span>
+          <div class="scores-grid">${propScores}</div>
+        </div>
+        <div class="scores-group">
+          <span class="scores-group-label">Neighbourhood</span>
+          <div class="scores-grid">${neighScores}</div>
+        </div>
+      </div>
+
+      ${comment.comment ? `<blockquote class="comment-text">${escapeHtml(comment.comment)}</blockquote>` : ""}
+    </article>
+  `;
+  }).join("");
+}
+
+function scorePillHtml(field, label, value) {
+  if (value === null || value === undefined) return "";
   return `
-    <div class="stats-empty">
-      <strong>No data yet</strong>
-      <p>Be the first to submit a review for this property.</p>
+    <div class="score-pill" data-value="${value}" data-field="${field}">
+      <span class="score-label">${escapeHtml(label)}</span>
+      <strong class="score-value">${escapeHtml(formatScore(field, value))}</strong>
     </div>
   `;
+}
+
+function formatScore(field, value) {
+  if (field === "load_shedding") {
+    if (value >= 4) return "Rare";
+    if (value >= 2) return "Moderate";
+    return "Frequent";
+  }
+  if (field === "water_supply") {
+    if (value >= 4) return "Reliable";
+    if (value >= 2) return "Unreliable";
+    return "Tanker dependent";
+  }
+  if (field === "standby_power") {
+    if (value >= 4) return "Generator";
+    if (value >= 2) return "UPS";
+    return "None";
+  }
+  if (field === "elevator") return value === 5 ? "Present" : "Stairs";
+  if (field === "parking")  return value === 5 ? "Present" : "None";
+  if (field === "flooding") {
+    if (value >= 4) return "None";
+    if (value >= 2) return "Minor";
+    return "Severe";
+  }
+  if (field === "noise") {
+    if (value >= 4) return "Low";
+    if (value >= 2) return "Moderate";
+    return "High";
+  }
+  if (field === "security") {
+    if (value >= 4) return "Safe";
+    if (value >= 2) return "Average";
+    return "Unsafe";
+  }
+  if (field === "traffic") {
+    if (value >= 4) return "Low";
+    if (value >= 2) return "Moderate";
+    return "High";
+  }
+  if (value >= 4) return "Good";
+  if (value >= 2) return "Fair";
+  return "Poor";
 }
 
 // ---------------------------------------------------------------------------
 // Review form
 // ---------------------------------------------------------------------------
+const PERIOD_REQUIRED_ROLES = new Set(["Current resident", "Former resident", "Owner or landlord"]);
+
 function openReviewPopup(propertyId) {
   reviewFormContainer.innerHTML = renderReviewForm(propertyId);
   const form = reviewFormContainer.querySelector("#reviewForm");
@@ -676,9 +839,20 @@ function openReviewPopup(propertyId) {
       btn.addEventListener("click", () => {
         control.querySelectorAll("button").forEach((b) => (b.dataset.active = "false"));
         btn.dataset.active = "true";
-        hiddenInput.value = btn.dataset.value;
+        hiddenInput.value  = btn.dataset.value;
       });
     });
+  });
+
+  const roleSelect  = form.querySelector("[name='contributor_role']");
+  const periodInput = form.querySelector("#periodInput");
+  const periodMark  = form.querySelector("#periodRequiredMark");
+
+  roleSelect.addEventListener("change", () => {
+    const requires = PERIOD_REQUIRED_ROLES.has(roleSelect.value);
+    periodInput.required    = requires;
+    periodInput.placeholder = requires ? "e.g. 2023–2025 (required)" : "e.g. 2023–2025 (optional)";
+    periodMark.textContent  = requires ? "*" : "";
   });
 
   reviewDialog.showModal();
@@ -686,18 +860,22 @@ function openReviewPopup(propertyId) {
 
 async function handleReviewSubmit(event, propertyId) {
   event.preventDefault();
-  const form  = event.target;
-  const error = form.querySelector(".form-error");
+  const form    = event.target;
+  const error   = form.querySelector(".form-error");
   error.textContent = "";
   const payload = Object.fromEntries(new FormData(form).entries());
+
+  const allReviewFields = [...propertySpecificFields, ...neighborhoodFields].map(([f]) => f);
+  const unselected      = allReviewFields.filter(f => !payload[f]);
+  if (unselected.length > 0) {
+    error.textContent = "Please make a selection for every property and neighbourhood field.";
+    return;
+  }
 
   if (!propertyId) {
     if (state.selectedPlace) {
       payload.place = state.selectedPlace;
     } else if (state.selectedLocation) {
-      // Fallback: raw coordinate click with no geocoded address.
-      // This will create a "Property at lat, lng" entry which is not ideal,
-      // but it's only reached when reverse geocoding failed entirely.
       payload.place = {
         lat:          state.selectedLocation.lat,
         lng:          state.selectedLocation.lng,
@@ -715,51 +893,27 @@ async function handleReviewSubmit(event, propertyId) {
   }
 
   try {
-    const url = propertyId
-      ? `/api/properties/${propertyId}/reviews`
-      : "/api/properties/new/reviews";
-    const result = await api(url, {
-      method: "POST",
-      body:   JSON.stringify(payload),
-    });
-
+    const url    = propertyId ? `/api/properties/${propertyId}/reviews` : "/api/properties/new/reviews";
+    const result = await api(url, { method: "POST", body: JSON.stringify(payload) });
     reviewDialog.close();
 
     const savedProperty = result.property;
-
     if (!propertyId) {
-      // New property was created (or matched). Inject it directly into state
-      // so it shows up immediately without depending on the spatial radius
-      // search to find it (which can miss due to coordinate rounding).
       const alreadyInList = state.properties.find((p) => p.id === savedProperty.id);
       if (!alreadyInList) {
         state.properties = [savedProperty, ...state.properties];
       } else {
-        state.properties = state.properties.map((p) =>
-          p.id === savedProperty.id ? savedProperty : p
-        );
+        state.properties = state.properties.map((p) => p.id === savedProperty.id ? savedProperty : p);
       }
-      state.selectedId = savedProperty.id;
-
-      // Also update selectedLocation to the property's actual stored coordinates
-      // so subsequent spatial searches find it reliably.
+      state.selectedId       = savedProperty.id;
       state.selectedLocation = {
         lat: Number(Number(savedProperty.latitude).toFixed(6)),
         lng: Number(Number(savedProperty.longitude).toFixed(6)),
       };
-      mapStatus.textContent = `${state.selectedLocation.lat}, ${state.selectedLocation.lng}`;
-
-      renderList();
       renderDetail();
-
-      // Then do a background reload at a wider radius to pick up any nearby
-      // properties that should also appear, without blocking the UI.
       loadPropertiesBackground();
     } else {
-      state.properties = state.properties.map((p) =>
-        p.id === propertyId ? savedProperty : p
-      );
-      renderList();
+      state.properties = state.properties.map((p) => p.id === propertyId ? savedProperty : p);
       renderDetail();
     }
   } catch (apiError) {
@@ -772,107 +926,6 @@ async function handleReviewSubmit(event, propertyId) {
   }
 }
 
-// Background reload — refreshes the property list without resetting selectedId
-async function loadPropertiesBackground() {
-  if (!state.selectedLocation) return; // nothing to sync without a pinned location
-
-  const params = new URLSearchParams(new FormData(searchForm));
-  params.set("lat",       state.selectedLocation.lat);
-  params.set("lng",       state.selectedLocation.lng);
-  params.set("radius_km", "0.075");
-
-  try {
-    const result = await api(`/api/properties?${params.toString()}`);
-    const currentId = state.selectedId;
-    const serverById = Object.fromEntries(result.properties.map((p) => [p.id, p]));
-    state.properties = state.properties.map((p) => serverById[p.id] || p);
-    for (const p of result.properties) {
-      if (!state.properties.find((s) => s.id === p.id)) {
-        state.properties.push(p);
-      }
-    }
-    state.selectedId = currentId;
-    renderList();
-    renderDetail();
-  } catch (_) {
-    // silent — UI already shows the review
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Render: empty state when no property selected
-// ---------------------------------------------------------------------------
-function renderMapEmptyState() {
-  if (!state.selectedLocation) {
-    return `
-      <div class="empty-state">
-        <h2>Property discovery is search-first</h2>
-        <p>Start by searching for a specific property or area above to view real-world insights.</p>
-      </div>
-    `;
-  }
-
-  const name    = state.selectedPlace ? state.selectedPlace.name : "Selected Location";
-  const address = state.selectedPlace
-    ? state.selectedPlace.display_name
-    : `${state.selectedLocation.lat}, ${state.selectedLocation.lng}`;
-
-  return `
-    <header class="sticky-property-header">
-      <div class="header-content">
-        <div class="header-meta">
-          <h2>${escapeHtml(name)}</h2>
-          <p>${escapeHtml(address)}</p>
-        </div>
-        <div class="header-actions">
-          ${renderAuthActions()}
-        </div>
-      </div>
-    </header>
-
-    <div class="property-page-content">
-      <div class="meta-row" style="margin-bottom: 24px;">
-        <span class="pill">New location</span>
-      </div>
-      ${renderNeighbourhoodPreviewSection()}
-    </div>
-  `;
-}
-
-function renderNeighbourhoodPreviewSection() {
-  const preview = state.neighbourhoodPreview;
-  const hasNeigh = preview && statsHaveData(preview.neighborhood_stats, neighborhoodFields);
-
-  if (!hasNeigh) {
-    return `
-      <div class="panel">
-        <h3>No experiences shared here yet</h3>
-        <p class="empty-copy">No one has reviewed this specific property yet. Sign in and be the first to share your observation.</p>
-      </div>
-    `;
-  }
-
-  const count = preview.review_count;
-  return `
-    <div class="panel" style="margin-bottom: 16px;">
-      <h3>No reviews for this property yet</h3>
-      <p class="empty-copy" style="margin-bottom:0">
-        But <strong>${count} ${count === 1 ? "review" : "reviews"}</strong> exist within 250 m.
-        Add yours to build a record for this specific address.
-      </p>
-    </div>
-    <div class="aggregation-panel">
-      <h3>Neighbourhood Conditions</h3>
-      <div class="stats-list">
-        ${renderStats(preview.neighborhood_stats, neighborhoodFields)}
-      </div>
-    </div>
-  `;
-}
-
-// ---------------------------------------------------------------------------
-// Review form builder
-// ---------------------------------------------------------------------------
 function renderReviewForm(propertyId) {
   return `
     <form class="review-form" id="reviewForm" data-property-id="${propertyId ?? ''}">
@@ -880,6 +933,7 @@ function renderReviewForm(propertyId) {
         <label>
           Contributor role
           <select name="contributor_role" required>
+            <option value="" disabled selected>Select your role</option>
             <option value="Current resident">Current resident</option>
             <option value="Former resident">Former resident</option>
             <option value="Buyer or tenant prospect">Buyer or tenant prospect</option>
@@ -887,9 +941,9 @@ function renderReviewForm(propertyId) {
             <option value="Owner or landlord">Owner or landlord</option>
           </select>
         </label>
-        <label>
-          Observed period
-          <input name="lived_period" placeholder="e.g. 2023–2025, or current" required>
+        <label id="periodLabel">
+          Observed period <span id="periodRequiredMark"></span>
+          <input name="lived_period" id="periodInput" placeholder="e.g. 2023–2025 (optional)">
         </label>
       </div>
 
@@ -901,13 +955,13 @@ function renderReviewForm(propertyId) {
       </div>
 
       <div class="review-section">
-        <h4>Neighborhood Conditions</h4>
+        <h4>Neighbourhood Conditions</h4>
         <div class="scale-grid">
           ${neighborhoodFields.map(([field, label]) => scale(field, label)).join("")}
         </div>
       </div>
 
-      <div class="form-grid" style="margin-top: 16px">
+      <div class="form-grid" style="margin-top:16px">
         <label>
           Rent range paid
           <input name="rent_range" placeholder="Optional">
@@ -924,7 +978,7 @@ function renderReviewForm(propertyId) {
       </label>
 
       <p class="form-error"></p>
-      <div style="display:flex; gap:12px; justify-content:flex-end; margin-top:12px;">
+      <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:12px;">
         <button class="primary-button" type="submit">Submit Review</button>
       </div>
     </form>
@@ -938,7 +992,25 @@ function scale(field, label) {
     { label: "Poor",  value: "1", variant: "poor" },
   ];
 
-  if (field === "noise") {
+  if (field === "load_shedding") {
+    options = [
+      { label: "Rare",     value: "5", variant: "good" },
+      { label: "Moderate", value: "3", variant: "" },
+      { label: "Frequent", value: "1", variant: "poor" },
+    ];
+  } else if (field === "water_supply") {
+    options = [
+      { label: "Reliable",         value: "5", variant: "good" },
+      { label: "Unreliable",       value: "3", variant: "" },
+      { label: "Tanker dependent", value: "1", variant: "poor" },
+    ];
+  } else if (field === "standby_power") {
+    options = [
+      { label: "Generator", value: "5", variant: "good" },
+      { label: "UPS",       value: "3", variant: "" },
+      { label: "None",      value: "1", variant: "poor" },
+    ];
+  } else if (field === "noise") {
     options = [
       { label: "Low",      value: "5", variant: "good" },
       { label: "Moderate", value: "3", variant: "" },
@@ -960,118 +1032,27 @@ function scale(field, label) {
       { label: "Present", value: "5", variant: "good" },
       { label: "None",    value: "1", variant: "poor" },
     ];
-  } else if (field === "internet") {
-    options = [
-      { label: "Available", value: "5", variant: "good" },
-      { label: "None",      value: "1", variant: "poor" },
-    ];
   } else if (field === "flooding") {
     options = [
       { label: "None",   value: "5", variant: "good" },
       { label: "Minor",  value: "3", variant: "" },
       { label: "Severe", value: "1", variant: "poor" },
     ];
-  } else if (field === "sewage") {
-    options = [
-      { label: "None",      value: "5", variant: "good" },
-      { label: "Occasional",value: "3", variant: "" },
-      { label: "Frequent",  value: "1", variant: "poor" },
-    ];
   }
-
-  // Binary fields default to not-present; ternary default to 5 (best condition)
-  const defaultValue =
-    field === "elevator" || field === "parking" ? "1" : "5";
 
   return `
     <div class="scale-control">
       <span>${label}</span>
       <div class="segmented-control" data-field="${field}">
-        <input type="hidden" name="${field}" value="${defaultValue}">
+        <input type="hidden" name="${field}" value="">
         ${options.map((opt) => `
-          <button type="button"
-            data-value="${opt.value}"
-            data-variant="${opt.variant}"
-            data-active="${opt.value === defaultValue ? "true" : "false"}">
+          <button type="button" data-value="${opt.value}" data-variant="${opt.variant}" data-active="false">
             ${opt.label}
           </button>
         `).join("")}
       </div>
     </div>
   `;
-}
-
-// ---------------------------------------------------------------------------
-// Render: individual review cards
-// ---------------------------------------------------------------------------
-function renderComments(property) {
-  if (!property.comments || !property.comments.length) {
-    return `<p class="empty-copy">No experiences shared for this property yet.</p>`;
-  }
-
-  const TRASH = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>`;
-
-  return property.comments.map((comment) => {
-    const isOwn = state.user && comment.reviewer_id === state.user.id;
-    return `
-    <article class="comment" data-review-id="${escapeHtml(comment.id)}">
-      <div class="comment-header">
-        <strong>${escapeHtml(comment.reviewer_name)}</strong>
-        <span class="comment-date">${new Date(comment.created_at).toLocaleDateString()}</span>
-      </div>
-      <div class="meta-row" style="margin-bottom:4px;">
-        <span class="pill">${escapeHtml(comment.contributor_role)}</span>
-        ${comment.lived_period ? `<span class="pill">Period: ${escapeHtml(comment.lived_period)}</span>` : ""}
-        ${comment.rent_range  ? `<span class="pill">Rent: ${escapeHtml(comment.rent_range)}</span>`  : ""}
-        ${comment.hidden_costs ? `<span class="pill">Hidden: ${escapeHtml(comment.hidden_costs)}</span>` : ""}
-      </div>
-      <div class="comment-scores-list">
-        ${allFields.map(([f, label]) => `
-          <div class="score-pill" data-value="${comment.scores[f]}">
-            ${label}: <strong>${formatScore(f, comment.scores[f])}</strong>
-          </div>
-        `).join("")}
-      </div>
-      ${comment.comment
-        ? `<p class="comment-text">"${escapeHtml(comment.comment)}"</p>`
-        : ""}
-      ${isOwn ? `
-        <div class="comment-actions">
-          <button class="delete-btn" data-action="delete-start" data-review-id="${escapeHtml(comment.id)}" aria-label="Delete review">${TRASH}</button>
-        </div>
-      ` : ""}
-    </article>
-  `;
-  }).join("");
-}
-
-function formatScore(field, value) {
-  if (field === "elevator")  return value === 5 ? "Present"   : "Stairs";
-  if (field === "parking")   return value === 5 ? "Present"   : "None";
-  if (field === "internet")  return value === 5 ? "Available" : "None";
-  if (field === "flooding") {
-    if (value >= 4) return "None";
-    if (value >= 2) return "Minor";
-    return "Severe";
-  }
-  if (field === "sewage") {
-    if (value >= 4) return "None";
-    if (value >= 2) return "Occasional";
-    return "Frequent";
-  }
-  if (field === "noise") {
-    if (value >= 4) return "Low";
-    if (value >= 2) return "Moderate";
-    return "High";
-  }
-  if (field === "security") {
-    if (value >= 4) return "Safe";
-    if (value >= 2) return "Average";
-    return "Unsafe";
-  }
-  if (value >= 4) return "Good";
-  if (value >= 2) return "Fair";
-  return "Poor";
 }
 
 // ---------------------------------------------------------------------------
@@ -1085,6 +1066,21 @@ function escapeHtml(value) {
     .replaceAll('"',  "&quot;")
     .replaceAll("'",  "&#039;");
 }
+
+// ---------------------------------------------------------------------------
+// After render, bind list-card clicks
+// ---------------------------------------------------------------------------
+detailPanel.addEventListener("click", (event) => {
+  const card = event.target.closest(".property-card");
+  if (!card) return;
+  state.selectedId = card.dataset.id;
+  const property = state.properties.find((p) => p.id === state.selectedId);
+  if (property) {
+    detailPanel.innerHTML = renderPropertyDetail(property);
+    bindDetailEvents(property.id);
+    detailPanel.scrollTop = 0;
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Boot
