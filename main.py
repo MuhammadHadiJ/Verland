@@ -777,9 +777,15 @@ class AppHandler(SimpleHTTPRequestHandler):
     def translate_path(self, path):
         parsed = urlparse(path)
         requested = parsed.path
-        if requested == "/":
-            return str(STATIC_DIR / "index.html")
-        return str(STATIC_DIR / requested.lstrip("/"))
+        static_root = STATIC_DIR.resolve()
+        candidate = (STATIC_DIR / requested.lstrip("/")).resolve()
+        within_static = candidate == static_root or static_root in candidate.parents
+        # SPA fallback: any non-API route without a matching static file
+        # (e.g. /property/<id>, /search) gets the app shell so client-side
+        # routing can take over on direct load / hard refresh.
+        if requested != "/" and within_static and candidate.is_file():
+            return str(candidate)
+        return str(STATIC_DIR / "index.html")
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")

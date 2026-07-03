@@ -68,6 +68,91 @@ function exitHero() {
   resultsWrapper.classList.add("visible");
 }
 
+function enterHero() {
+  if (!heroExited) return;
+  heroExited = false;
+  hero.classList.remove("hidden");
+  resultsWrapper.classList.remove("visible");
+  state.properties       = [];
+  state.selectedId       = null;
+  state.selectedLocation = null;
+  state.selectedPlace    = null;
+  searchInput.value      = "";
+  heroSearchInput.value  = "";
+  cityInput.value        = "";
+  heroCityInput.value    = "";
+}
+
+// ---------------------------------------------------------------------------
+// URL routing
+// ---------------------------------------------------------------------------
+// URL scheme: "/" = hero, "/property/<id>" = single listing, "/search?q=&city=" = results.
+// lat/lng-based searches (from autocomplete/map selection) fall back to the q/city
+// text search on reload — good enough for v1, exact radius match isn't preserved.
+function currentUrlForState() {
+  const property = state.properties.find((p) => p.id === state.selectedId);
+  if (property) return `/property/${encodeURIComponent(property.id)}`;
+  if (!heroExited) return "/";
+
+  const params = new URLSearchParams();
+  const q    = searchInput.value.trim();
+  const city = cityInput.value.trim();
+  if (q)    params.set("q", q);
+  if (city) params.set("city", city);
+  const qs = params.toString();
+  return qs ? `/search?${qs}` : "/search";
+}
+
+function syncUrl() {
+  const url = currentUrlForState();
+  if (url !== location.pathname + location.search) {
+    history.pushState({}, "", url);
+  }
+}
+
+async function renderFromUrl() {
+  const path   = location.pathname;
+  const params = new URLSearchParams(location.search);
+
+  if (path.startsWith("/property/")) {
+    const id = decodeURIComponent(path.slice("/property/".length));
+    exitHero();
+    try {
+      const result = await api(`/api/properties/${id}`);
+      state.properties = [result.property];
+      state.selectedId = result.property.id;
+    } catch (_) {
+      state.properties = [];
+      state.selectedId = null;
+    }
+    renderDetail();
+    return;
+  }
+
+  if (path === "/search") {
+    state.selectedLocation     = null;
+    state.selectedPlace        = null;
+    state.selectedId           = null;
+    state.neighbourhoodPreview = null;
+    const q    = params.get("q")    || "";
+    const city = params.get("city") || "";
+    searchInput.value     = q;
+    heroSearchInput.value = q;
+    cityInput.value       = city;
+    heroCityInput.value   = city;
+    exitHero();
+    await loadProperties();
+    return;
+  }
+
+  // "/" — hero, nothing to restore.
+}
+
+window.addEventListener("popstate", () => {
+  if (location.pathname === "/") enterHero();
+  renderFromUrl();
+});
+
 // ---------------------------------------------------------------------------
 // Theme toggle
 // ---------------------------------------------------------------------------
@@ -136,6 +221,7 @@ detailPanel.addEventListener("click", (event) => {
   confirmDeleteError.textContent = "";
   confirmDeleteBtn.textContent = "Delete";
   confirmDeleteBtn.disabled = false;
+  if (reviewDialog.open) reviewDialog.close();
   confirmDialog.showModal();
 });
 
@@ -179,14 +265,34 @@ function renderDropdown(places, dropdownEl, onSelect) {
   dropdownEl.innerHTML = "";
   dropdownEl.hidden = false;
 
+  // Scrolling happens on this inner wrapper, not on dropdownEl itself, so the
+  // native scrollbar track never overlaps dropdownEl's rounded corners.
+  const scroller = document.createElement("div");
+  scroller.className = "autocomplete-dropdown-scroll";
+
   for (const place of places) {
     const btn = document.createElement("button");
     btn.className = "autocomplete-item";
     btn.type = "button";
     btn.innerHTML = `<strong>${escapeHtml(place.name)}</strong><span>${escapeHtml(place.display_name)}</span>`;
     btn.addEventListener("click", () => { dropdownEl.hidden = true; onSelect(place); });
-    dropdownEl.append(btn);
+    scroller.append(btn);
   }
+  dropdownEl.append(scroller);
+
+  // .hero is position:fixed with no scroll of its own, so a dropdown that
+  // opens downward past the bottom of a short viewport would otherwise be
+  // permanently unreachable — clamp to whatever space is actually left.
+  const BOTTOM_MARGIN = 24;
+  const top = dropdownEl.getBoundingClientRect().top;
+  const available = window.innerHeight - top - BOTTOM_MARGIN;
+  const maxHeight = Math.max(120, Math.min(280, available));
+  // Set on both: dropdownEl's max-height defines the clipped/rounded shell,
+  // but scroller's own max-height must be set in px too — percentage heights
+  // don't reliably resolve against a parent sized only by max-height, so
+  // leaving this to CSS `max-height: 100%` silently breaks the scroll.
+  dropdownEl.style.maxHeight = `${maxHeight}px`;
+  scroller.style.maxHeight = `${maxHeight}px`;
 }
 
 // Hero autocomplete
@@ -293,6 +399,8 @@ async function init() {
       }
     } catch (_) {}
   }
+
+  await renderFromUrl();
 }
 
 // ---------------------------------------------------------------------------
@@ -458,21 +566,25 @@ function renderDetail() {
   if (property) {
     detailPanel.innerHTML = renderPropertyDetail(property);
     bindDetailEvents(property.id);
+    syncUrl();
     return;
   }
 
   if (state.properties.length > 1) {
     detailPanel.innerHTML = renderPropertyList();
+    syncUrl();
     return;
   }
 
   if (state.selectedLocation || state.properties.length === 0 && (searchInput.value.trim() || cityInput.value)) {
     detailPanel.innerHTML = renderEmptyLocationState();
     bindDetailEvents(null);
+    syncUrl();
     return;
   }
 
   detailPanel.innerHTML = "";
+  syncUrl();
 }
 
 function renderPropertyList() {
@@ -624,8 +736,7 @@ function bindDetailEvents(propertyId) {
     if (backToList) {
       backToList.addEventListener("click", () => {
         state.selectedId = null;
-        detailPanel.innerHTML = renderPropertyList();
-        bindListEvents();
+        renderDetail();
       });
     }
 
@@ -636,22 +747,6 @@ function bindDetailEvents(propertyId) {
       const sig = document.querySelector("#signInGoogle");
       if (sig) sig.addEventListener("click", doSignIn);
     }
-  }, 50);
-}
-
-function bindListEvents() {
-  setTimeout(() => {
-    document.querySelectorAll(".property-card").forEach((card) => {
-      card.addEventListener("click", () => {
-        state.selectedId = card.dataset.id;
-        const property = state.properties.find((p) => p.id === state.selectedId);
-        if (property) {
-          detailPanel.innerHTML = renderPropertyDetail(property);
-          bindDetailEvents(property.id);
-          detailPanel.scrollTop = 0;
-        }
-      });
-    });
   }, 50);
 }
 
@@ -855,6 +950,7 @@ function openReviewPopup(propertyId) {
     periodMark.textContent  = requires ? "*" : "";
   });
 
+  if (confirmDialog.open) confirmDialog.close();
   reviewDialog.showModal();
 }
 
@@ -1074,12 +1170,8 @@ detailPanel.addEventListener("click", (event) => {
   const card = event.target.closest(".property-card");
   if (!card) return;
   state.selectedId = card.dataset.id;
-  const property = state.properties.find((p) => p.id === state.selectedId);
-  if (property) {
-    detailPanel.innerHTML = renderPropertyDetail(property);
-    bindDetailEvents(property.id);
-    detailPanel.scrollTop = 0;
-  }
+  renderDetail();
+  detailPanel.scrollTop = 0;
 });
 
 // ---------------------------------------------------------------------------

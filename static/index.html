@@ -29,20 +29,17 @@
 
         <form class="header-search" id="searchForm" autocomplete="off">
           <div class="header-search-inner">
-            <div class="autocomplete-container">
-              <div class="header-input-wrap">
-                <svg class="header-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                </svg>
-                <input
-                  id="searchInput"
-                  name="q"
-                  type="search"
-                  placeholder="Search property, area or street..."
-                  aria-label="Search properties"
-                >
-              </div>
-              <div id="autocompleteDropdown" class="autocomplete-dropdown" hidden></div>
+            <div class="header-input-wrap">
+              <svg class="header-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input
+                id="searchInput"
+                name="q"
+                type="search"
+                placeholder="Search property, area or street..."
+                aria-label="Search properties"
+              >
             </div>
             <div class="header-city-wrap">
               <select id="cityInput" name="city" aria-label="Filter by city">
@@ -59,6 +56,8 @@
             </div>
             <button type="submit" class="header-search-btn">Search</button>
           </div>
+          <!-- dropdown is outside header-search-inner so overflow:hidden doesn't clip it -->
+          <div id="autocompleteDropdown" class="autocomplete-dropdown" hidden></div>
         </form>
 
         <div class="header-right">
@@ -79,11 +78,13 @@
     <!-- ── HERO OVERLAY (position: fixed, covers everything initially) ── -->
     <section class="hero" id="hero" aria-label="Verland search">
 
-      <!-- decorative orbs -->
-      <div class="hero-orb hero-orb-1" aria-hidden="true"></div>
-      <div class="hero-orb hero-orb-2" aria-hidden="true"></div>
-      <div class="hero-orb hero-orb-3" aria-hidden="true"></div>
-      <div class="hero-grid" aria-hidden="true"></div>
+      <!-- decorative background (clipped separately so orbs don't bleed but dropdown can overflow) -->
+      <div class="hero-bg" aria-hidden="true">
+        <div class="hero-orb hero-orb-1"></div>
+        <div class="hero-orb hero-orb-2"></div>
+        <div class="hero-orb hero-orb-3"></div>
+        <div class="hero-grid"></div>
+      </div>
 
       <nav class="hero-nav">
         <div class="brand brand--hero">
