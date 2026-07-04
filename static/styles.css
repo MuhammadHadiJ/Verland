@@ -66,13 +66,35 @@ button, input, select, textarea { font: inherit; }
   flex-direction: column;
   min-height: 100vh;
   opacity: 0;
-  transition: opacity 0.3s ease 0.15s;
+  visibility: hidden;      /* keeps the hidden search box out of tab order
+                               and the accessibility tree — opacity/pointer-
+                               events alone still leave it keyboard-reachable */
+  transition: opacity 0.3s ease 0.15s, visibility 0s linear 0.45s;
   pointer-events: none;
 }
 
 .results-wrapper.visible {
   opacity: 1;
+  visibility: visible;
+  transition: opacity 0.3s ease 0.15s, visibility 0s linear 0s;
   pointer-events: all;
+}
+
+/* Deep link / refresh landing directly on a non-hero route: render already
+   in the "exited hero" end-state with no animation, set by the inline
+   script in <head> before body content paints. See index.html. */
+html.no-initial-transition #hero {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  transform: translateY(-10px) !important;
+  pointer-events: none !important;
+  transition: none !important;
+}
+html.no-initial-transition #resultsWrapper {
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: all !important;
+  transition: none !important;
 }
 
 /* ================================================================
@@ -119,6 +141,9 @@ button, input, select, textarea { font: inherit; }
 .header-search {
   width: 100%;
   max-width: 580px;
+  min-width: 0;          /* grid items default to min-width:auto, which
+                             refuses to shrink below content size and
+                             pushes .header-right off narrow viewports */
   justify-self: center;
   position: relative;   /* anchor for #autocompleteDropdown */
 }
@@ -979,7 +1004,12 @@ dialog::backdrop {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  margin-bottom: 18px;
+  margin: -24px -24px 18px -24px;   /* pull to .dialog-card's true edge... */
+  padding: 24px 24px 14px 24px;     /* ...then restore the visual inset */
+  position: sticky;
+  top: -24px;                       /* offset matches the negative margin */
+  background: var(--panel);
+  z-index: 2;
 }
 
 .dialog-header h2 {
@@ -987,6 +1017,19 @@ dialog::backdrop {
   font-weight: 800;
   letter-spacing: -0.01em;
   color: var(--ink);
+}
+
+.review-submit-row {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  position: sticky;
+  bottom: -24px;                    /* symmetric with .dialog-header's top: -24px */
+  margin: 12px -24px -24px -24px;
+  padding: 14px 24px 24px 24px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  z-index: 2;
 }
 
 .dialog-body { font-size: 0.87rem; color: var(--muted); }
@@ -1009,7 +1052,8 @@ dialog::backdrop {
   /* no overflow:hidden here — lets autocomplete dropdown escape the boundary */
   display: flex;
   flex-direction: column;
-  transition: opacity 0.45s ease, transform 0.45s ease;
+  visibility: visible;
+  transition: opacity 0.45s ease, transform 0.45s ease, visibility 0s linear 0s;
 }
 
 /* clips the decorative orbs without clipping the dropdown */
@@ -1024,6 +1068,8 @@ dialog::backdrop {
 .hero.hidden {
   opacity: 0;
   transform: translateY(-10px);
+  visibility: hidden;      /* out of tab order / accessibility tree once faded out */
+  transition: opacity 0.45s ease, transform 0.45s ease, visibility 0s linear 0.45s;
   pointer-events: none;
 }
 
@@ -1460,4 +1506,12 @@ html[data-theme="dark"] #heroCityInput { color: #7d8590; }
   .hero-city-divider { display: none; }
   .hero-nav          { padding: 16px 20px; }
   .hero-body         { padding-bottom: 60px; }
+
+  /* Header search + Sign in + theme toggle no longer fit comfortably on
+     one row at phone widths — reclaim space from the least essential bits. */
+  #themeLabel          { display: none; }
+  .theme-btn           { padding: 8px; }
+  .header-search-btn   { padding: 0 12px; font-size: 0.78rem; }
+  .app-header          { gap: 8px; padding: 0 12px; }
+  .header-right        { gap: 6px; }
 }

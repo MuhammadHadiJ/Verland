@@ -14,6 +14,24 @@
         var dark = pref === "dark" || (pref === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
         document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
         document.documentElement.setAttribute("data-theme-pref", pref);
+
+        // Landing directly on a non-hero route (deep link / refresh, or the
+        // post-sign-in OAuth redirect restoring a pre-auth search) must not
+        // show the hero at all, even for a frame — app.js only decides which
+        // view to show after it loads and (often) awaits a fetch, which is
+        // too late to prevent the hero from painting first. This runs before
+        // body content parses, so styles.css can hide it from frame one.
+        // Mirrors the restore condition in app.js's init().
+        var skipHero = location.pathname !== "/";
+        if (!skipHero && location.search.indexOf("restore=1") !== -1) {
+          try {
+            var savedState = JSON.parse(localStorage.getItem("preAuthState") || "null");
+            skipHero = !!(savedState && savedState.selectedLocation);
+          } catch (e) {}
+        }
+        if (skipHero) {
+          document.documentElement.classList.add("no-initial-transition");
+        }
       })();
     </script>
   </head>

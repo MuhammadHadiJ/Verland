@@ -734,6 +734,29 @@ def exchange_code_for_session(env, code, code_verifier=None):
         return json.loads(resp.read().decode())
 
 
+def refresh_session(env, refresh_token):
+    """
+    Exchange a refresh token for a new Supabase session.
+    Returns the session dict on success, raises on failure.
+    """
+    base = supabase_url(env)
+    if not base:
+        raise ValueError("Supabase URL not configured")
+
+    data = json.dumps({"refresh_token": refresh_token}).encode()
+    req = Request(
+        f"{base}/auth/v1/token?grant_type=refresh_token",
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "apikey":       get_supabase_anon_key(env),
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode())
+
+
 def get_user_from_token(env, access_token):
     """Validate a JWT and return the user dict, or None if invalid."""
     base = supabase_url(env)
@@ -796,6 +819,10 @@ class AppHandler(SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
+        # Set by _resolve_session() when an expired access token was
+        # transparently renewed via the refresh token during this request.
+        for cookie in getattr(self, "_pending_set_cookies", []):
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -1031,13 +1058,7 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def handle_auth_me(self):
         """Return the current user from session cookie, or 401."""
-        access_token, _ = parse_session_cookie(self)
-        if not access_token:
-            self.send_error_json("Not authenticated", HTTPStatus.UNAUTHORIZED)
-            return
-
-        env = read_env()
-        user = get_user_from_token(env, access_token)
+        user = self._resolve_session()
         if not user:
             self.send_error_json("Session expired", HTTPStatus.UNAUTHORIZED)
             return
@@ -1069,12 +1090,49 @@ class AppHandler(SimpleHTTPRequestHandler):
         Returns the authenticated user_id string, or None if not signed in.
         Reads from session cookie (real auth) with no fallback to mock headers.
         """
-        access_token, _ = parse_session_cookie(self)
+        user = self._resolve_session()
+        return user.get("id") if user else None
+
+    def _resolve_session(self):
+        """
+        Returns the authenticated user dict, or None.
+
+        A Supabase access token is a short-lived JWT (~1hr default) — without
+        this, every session would silently die mid-use with a generic "sign
+        in" error despite a valid refresh token sitting right in the cookie.
+        On an expired access token, transparently exchanges the refresh
+        token for a new session and queues the renewed cookies to go out
+        with whatever response send_json() ends up sending for this request.
+        """
+        access_token, refresh_token = parse_session_cookie(self)
         if not access_token:
             return None
+
         env = read_env()
         user = get_user_from_token(env, access_token)
-        return user.get("id") if user else None
+        if user:
+            return user
+
+        if not refresh_token:
+            return None
+        try:
+            session = refresh_session(env, refresh_token)
+        except Exception:
+            return None
+
+        new_access = session.get("access_token")
+        if not new_access:
+            return None
+        user = get_user_from_token(env, new_access)
+        if not user:
+            return None
+
+        new_refresh = session.get("refresh_token", refresh_token)
+        self._pending_set_cookies = [
+            f"sb_access_token={new_access}; Path=/; HttpOnly; SameSite=Lax",
+            f"sb_refresh_token={new_refresh}; Path=/; HttpOnly; SameSite=Lax",
+        ]
+        return user
 
     # ------------------------------------------------------------------
     # Config

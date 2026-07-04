@@ -194,6 +194,16 @@ confirmDialog.addEventListener("close", () => {
   confirmDeleteBtn.disabled = false;
 });
 
+// Background page shouldn't scroll while a dialog is open — native <dialog>
+// doesn't lock body scroll on its own. Only unlock once neither is open,
+// since the "close one to open the other" guard fires a close event for the
+// dialog being replaced.
+function updateBodyScrollLock() {
+  document.body.style.overflow = (confirmDialog.open || reviewDialog.open) ? "hidden" : "";
+}
+confirmDialog.addEventListener("close", updateBodyScrollLock);
+reviewDialog.addEventListener("close", updateBodyScrollLock);
+
 let pendingDeleteId = null;
 
 confirmDeleteBtn.addEventListener("click", async () => {
@@ -223,6 +233,7 @@ detailPanel.addEventListener("click", (event) => {
   confirmDeleteBtn.disabled = false;
   if (reviewDialog.open) reviewDialog.close();
   confirmDialog.showModal();
+  updateBodyScrollLock();
 });
 
 // ---------------------------------------------------------------------------
@@ -366,6 +377,19 @@ searchForm.addEventListener("submit", (event) => {
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
+// The inline <head> script snaps hero/results straight to their end-state,
+// with transitions suppressed, for any direct load of a non-hero route —
+// avoiding a flash of the hero before JS decides which view to show. Once
+// that initial state has actually painted, re-enable transitions so later
+// interactive toggles (e.g. browser back to "/") animate normally again.
+function clearInitialTransitionGuard() {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      document.documentElement.classList.remove("no-initial-transition");
+    });
+  });
+}
+
 async function init() {
   try {
     const me = await api("/api/auth/me");
@@ -395,12 +419,14 @@ async function init() {
         exitHero();
         await loadProperties();
         renderDetail();
+        clearInitialTransitionGuard();
         return;
       }
     } catch (_) {}
   }
 
   await renderFromUrl();
+  clearInitialTransitionGuard();
 }
 
 // ---------------------------------------------------------------------------
@@ -952,6 +978,7 @@ function openReviewPopup(propertyId) {
 
   if (confirmDialog.open) confirmDialog.close();
   reviewDialog.showModal();
+  updateBodyScrollLock();
 }
 
 async function handleReviewSubmit(event, propertyId) {
@@ -1074,7 +1101,7 @@ function renderReviewForm(propertyId) {
       </label>
 
       <p class="form-error"></p>
-      <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:12px;">
+      <div class="review-submit-row">
         <button class="primary-button" type="submit">Submit Review</button>
       </div>
     </form>
