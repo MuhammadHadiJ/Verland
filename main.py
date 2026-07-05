@@ -1,5 +1,8 @@
+import base64
+import hashlib
 import json
 import os
+import secrets
 import uuid
 from datetime import date, datetime
 from http import HTTPStatus
@@ -87,6 +90,107 @@ CITY_COORDS = {
 DEFAULT_PROXIMITY = CITY_COORDS["karachi"]
 
 # ---------------------------------------------------------------------------
+# City sub-division aliases
+# ---------------------------------------------------------------------------
+# LocationIQ/Nominatim frequently tags a Pakistani address's "city" field
+# with a sub-city administrative unit — a Town, Tehsil, Cantonment, or Zone —
+# rather than the metro city itself. E.g. an address in Karachi's Jamshed
+# Town gets city="Jamshed Town" from the geocoder, not "Karachi", because
+# that's the literal OSM admin boundary the point falls in. An exact-string
+# search for "Karachi" would then miss it entirely. This maps every known
+# sub-division of each of the app's 8 supported cities back to its canonical
+# city, so searching "Karachi" matches any property tagged with a real
+# Karachi sub-area, not just the literal string "Karachi".
+#
+# Researched against Wikipedia and official provincial government sources
+# (2026-07) — sources cited per city below. Deliberately excludes bare,
+# non-distinctive names that collide across cities (e.g. plain "Saddar",
+# which is a real tehsil name in both Lahore and Quetta, or plain
+# "Cantonment") — misattributing a property to the wrong city would be worse
+# than the current bug, which just makes one hard to find. Also excludes
+# Union Council-level detail everywhere (hundreds per city, no single
+# authoritative consolidated source). Pakistani administrative boundaries
+# are reorganized periodically — Karachi alone has changed twice since 2001
+# — so treat this as a practical aid, not an authoritative map.
+CITY_SUBDIVISIONS = {
+    # https://en.wikipedia.org/wiki/Administrative_divisions_of_Karachi
+    "karachi": [
+        # Current districts (renamed 2024; these are the new names)
+        "gulshan", "orangi", "nazimabad", "malir", "korangi", "keamari",
+        # Towns (2001-2011 system; OSM data still commonly uses these)
+        "saddar town", "lyari town", "gulshan town", "jinnah town",
+        "jamshed town", "safoora goth town", "sohrab goth town",
+        "nazimabad town", "north nazimabad town", "gulberg town",
+        "liaquatabad town", "new karachi town", "malir town", "gadap town",
+        "ibrahim hyderi town", "model colony town", "shah faisal town",
+        "korangi town", "landhi town", "orangi town", "mominabad town",
+        "manghopir town", "keamari town", "baldia town",
+        "moriro mirbahar town",
+    ],
+    # https://en.wikipedia.org/wiki/Lahore_District ;
+    # https://www.dawn.com/news/1855124 (2024 tehsil reorg, 5->10)
+    "lahore": [
+        "lahore city", "lahore cantonment", "lahore cantt", "model town",
+        "raiwind", "shalimar", "shalamar", "ravi", "wagah", "wagha",
+        "nishtar", "nishter", "allama iqbal town", "iqbal town",
+        "aziz bhatti", "data ganj bakhsh", "gulberg", "samnabad",
+    ],
+    # https://en.wikipedia.org/wiki/Islamabad_Capital_Territory ;
+    # confirmed against live Nominatim queries — Islamabad addresses
+    # typically carry no "city" tag at all, using "municipality" (Zone
+    # I-V) and "town"/"village" for hyper-local names instead.
+    "islamabad": [
+        "zone i", "zone ii", "zone iii", "zone iv", "zone v",
+        "rawat", "bhara kahu", "nilore", "tarnol", "sihala", "bani gala",
+        "nurpur shahan", "golra", "shah allah ditta",
+    ],
+    # https://en.wikipedia.org/wiki/Rawalpindi_District ;
+    # https://en.wikipedia.org/wiki/Rawalpindi_Cantonment
+    "rawalpindi": [
+        "gujar khan", "kahuta", "kallar syedan", "taxila",
+        "rawalpindi cantonment", "rawalpindi cantt", "chaklala",
+        "chaklala cantonment", "westridge",
+    ],
+    # https://en.wikipedia.org/wiki/Faisalabad_District ;
+    # https://faisalabad.punjab.gov.pk/district_profile
+    "faisalabad": [
+        "faisalabad city", "faisalabad sadar", "jaranwala", "tandlianwala",
+        "samundri", "chak jhumra",
+    ],
+    # https://en.wikipedia.org/wiki/Peshawar_District ; confirmed against
+    # live Nominatim query — ordinary in-city Peshawar addresses get
+    # city="Peshawar City Tehsil" literally, not "Peshawar".
+    "peshawar": [
+        "peshawar city tehsil", "peshawar cantonment", "peshawar cantt",
+        "badbher", "badhaber", "chamkani", "mathra", "pishtakhara",
+        "peshtakhara", "shah alam", "hassan khel",
+    ],
+    # https://en.wikipedia.org/wiki/Quetta_District ;
+    # https://en.wikipedia.org/wiki/List_of_tehsils_of_Balochistan
+    "quetta": [
+        "chiltan", "zarghoon", "panjpai", "quetta sadar", "quetta saddar",
+        "kuchlak", "sariab", "quetta city",
+    ],
+    # https://en.wikipedia.org/wiki/Multan_District ;
+    # https://multan.punjab.gov.pk/district_profile
+    "multan": [
+        "multan city", "multan sadar", "multan saddar", "shujabad",
+        "jalalpur pirwala",
+    ],
+}
+
+
+def _build_city_aliases():
+    """canonical city (lowercase) -> set of every matching city-field string"""
+    return {
+        canonical: {canonical, *subdivisions}
+        for canonical, subdivisions in CITY_SUBDIVISIONS.items()
+    }
+
+
+CITY_ALIASES = _build_city_aliases()
+
+# ---------------------------------------------------------------------------
 # Aggregation label map
 # ---------------------------------------------------------------------------
 LABEL_MAP = {
@@ -96,8 +200,8 @@ LABEL_MAP = {
     "maintenance":          {5: "Good",        3: "Fair",            1: "Poor"},
     "building_maintenance": {5: "Good",        3: "Fair",            1: "Poor"},
     "standby_power":        {5: "Generator",   3: "UPS",             1: "None"},
-    "elevator":             {5: "Present",                           1: "Not Present"},
-    "parking":              {5: "Present",                           1: "Not Present"},
+    "elevator":             {5: "Present",                           1: "Stairs"},
+    "parking":              {5: "Present",                           1: "None"},
     "noise":                {5: "Low",         3: "Moderate",        1: "High"},
     "security":             {5: "Safe",        3: "Average",         1: "Unsafe"},
     "cleanliness":          {5: "Good",        3: "Fair",            1: "Poor"},
@@ -109,7 +213,9 @@ LABEL_MAP = {
 # Environment helpers
 # ---------------------------------------------------------------------------
 def read_env():
-    values = {}
+    # Real environment variables first (how every hosting platform injects
+    # secrets) — a local .env file, if present, overrides them for dev.
+    values = dict(os.environ)
     if not ENV_PATH.exists():
         return values
     try:
@@ -135,6 +241,22 @@ def supabase_url(env):
     return env.get("SUPABASE_URL") or (
         f"https://{project_ref}.supabase.co" if project_ref else ""
     )
+
+
+def public_base_url(env):
+    """
+    The externally-reachable origin this app is served at — used to build
+    the OAuth redirect_to URL. Must be set explicitly (not inferred from the
+    request's Host header, which a client can spoof) once hosted anywhere
+    other than localhost.
+    """
+    return (env.get("PUBLIC_BASE_URL") or "http://localhost:8000").rstrip("/")
+
+
+def cookie_secure_suffix(env):
+    """`; Secure` once served over HTTPS, nothing on plain local HTTP (browsers
+    silently drop Secure cookies set over an insecure origin)."""
+    return "; Secure" if public_base_url(env).startswith("https://") else ""
 
 
 def locationiq_key(env):
@@ -400,6 +522,9 @@ def parse_locationiq_place(place):
         address.get("city")
         or address.get("town")
         or address.get("village")
+        # Islamabad in particular usually has no "city" tag at all — Nominatim
+        # puts its Zone I-V designation in "municipality" instead.
+        or address.get("municipality")
         or address.get("county")
         or ""
     )
@@ -704,25 +829,38 @@ def get_supabase_anon_key(env):
     return env.get(SUPABASE_ANON_KEY_ENV) or env.get("ANON_KEY") or ""
 
 
-def exchange_code_for_session(env, code, code_verifier=None):
+def generate_pkce_pair():
     """
-    Exchange an OAuth code for a Supabase session.
+    RFC 7636 PKCE pair: a random verifier, and its SHA-256 challenge
+    (base64url, no padding) — matches the exact derivation Supabase's own
+    auth-js client uses, verified against its source rather than guessed.
+    """
+    verifier = secrets.token_urlsafe(64)
+    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+
+def exchange_pkce_code(env, auth_code, code_verifier):
+    """
+    Exchange a PKCE auth code + its verifier for a Supabase session.
     Returns the session dict on success, raises on failure.
+
+    Endpoint/body shape (grant_type=pkce, auth_code + code_verifier keys) is
+    not documented in Supabase's prose docs — confirmed directly against
+    auth-js's _exchangeCodeForSession in GoTrueClient.ts to avoid guessing
+    at an API contract that would silently break sign-in if wrong.
     """
     base = supabase_url(env)
     if not base:
         raise ValueError("Supabase URL not configured")
 
-    payload = {
-        "grant_type":    "authorization_code",
-        "code":          code,
-    }
-    if code_verifier:
-        payload["code_verifier"] = code_verifier
-
-    data = json.dumps(payload).encode()
+    data = json.dumps({
+        "auth_code":     auth_code,
+        "code_verifier": code_verifier,
+    }).encode()
     req = Request(
-        f"{base}/auth/v1/token?grant_type=authorization_code",
+        f"{base}/auth/v1/token?grant_type=pkce",
         data=data,
         headers={
             "Content-Type": "application/json",
@@ -874,9 +1012,6 @@ class AppHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
-        if path == "/api/auth/session":
-            self.handle_auth_session()
-            return
         if path == "/api/properties/new/reviews":
             self.handle_create_review(None)
             return
@@ -947,7 +1082,11 @@ class AppHandler(SimpleHTTPRequestHandler):
     # Auth endpoints (Fix #1 / Phase 3)
     # ------------------------------------------------------------------
     def handle_auth_signin(self, parsed):
-        """Redirect the browser to Supabase OAuth for Google."""
+        """
+        Redirect the browser to Supabase OAuth for Google, using PKCE —
+        the code_verifier lives only in a short-lived HttpOnly cookie on
+        this server, never in anything the browser's JS or URL bar can see.
+        """
         env = read_env()
         base = supabase_url(env)
         if not base:
@@ -960,101 +1099,66 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.send_error_json("Unsupported provider", HTTPStatus.BAD_REQUEST)
             return
 
+        verifier, challenge = generate_pkce_pair()
         oauth_params = urlencode({
-            "provider":    provider,
-            "redirect_to": "http://localhost:8000/api/auth/callback",
+            "provider":              provider,
+            "redirect_to":           f"{public_base_url(env)}/api/auth/callback",
+            "code_challenge":        challenge,
+            "code_challenge_method": "s256",
         })
         supabase_oauth_url = f"{base}/auth/v1/authorize?{oauth_params}"
 
         self.send_response(HTTPStatus.FOUND)
         self.send_header("Location", supabase_oauth_url)
+        self.send_header(
+            "Set-Cookie",
+            f"sb_pkce_verifier={verifier}; Path=/; HttpOnly; SameSite=Lax; "
+            f"Max-Age=600{cookie_secure_suffix(env)}"
+        )
         self.end_headers()
 
     def handle_auth_callback(self, parsed):
         """
-        Supabase redirects here after OAuth. It always sends tokens as a URL
-        fragment (#access_token=...&refresh_token=...) which the server cannot
-        read — fragments are never sent in HTTP requests.
-
-        Strategy: serve a tiny HTML page that reads the fragment in JS and
-        immediately POSTs the tokens to /api/auth/session, which sets HttpOnly
-        cookies and redirects to /.
+        Supabase redirects here after OAuth with the auth code as a query
+        param (?code=...) — unlike the old implicit flow, the PKCE code is
+        useless without the verifier cookie that never leaves this server,
+        so the access/refresh tokens never appear in the browser's URL bar
+        or history at all, not even momentarily.
         """
-        html = b"""<!doctype html>
-<html>
-<head><meta charset="utf-8"><title>Signing in...</title></head>
-<body>
-<script>
-(function () {
-  var hash = window.location.hash.slice(1);
-  if (!hash) { window.location.replace("/"); return; }
-  var params = {};
-  hash.split("&").forEach(function(part) {
-    var kv = part.split("=");
-    params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || "");
-  });
-  var access  = params["access_token"];
-  var refresh = params["refresh_token"];
-  if (!access) { window.location.replace("/"); return; }
-  fetch("/api/auth/session", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ access_token: access, refresh_token: refresh || "" })
-  }).then(function(r) {
-    if (r.ok) {
-      // Check if there is saved pre-auth state to restore
-      var saved = localStorage.getItem("preAuthState");
-      if (saved) {
-        window.location.replace("/?restore=1");
-      } else {
-        window.location.replace("/");
-      }
-    } else {
-      window.location.replace("/");
-    }
-  }).catch(function() { window.location.replace("/"); });
-})();
-</script>
-<p>Completing sign in...</p>
-</body>
-</html>"""
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(html)))
-        self.end_headers()
-        self.wfile.write(html)
+        env = read_env()
+        secure = cookie_secure_suffix(env)
+        code = parse_qs(parsed.query).get("code", [None])[0]
 
-    def handle_auth_session(self):
-        """
-        Receives { access_token, refresh_token } from the callback page JS
-        and stores them as HttpOnly cookies.
-        """
-        try:
-            body = parse_body(self)
-        except ValueError as exc:
-            self.send_error_json(str(exc))
-            return
+        verifier = None
+        for part in self.headers.get("Cookie", "").split(";"):
+            part = part.strip()
+            if part.startswith("sb_pkce_verifier="):
+                verifier = part.split("=", 1)[1]
+                break
 
-        access_token  = str(body.get("access_token",  "") or "").strip()
-        refresh_token = str(body.get("refresh_token", "") or "").strip()
+        access_token = refresh_token = None
+        if code and verifier:
+            try:
+                session = exchange_pkce_code(env, code, verifier)
+                access_token  = session.get("access_token")
+                refresh_token = session.get("refresh_token")
+            except Exception as e:
+                print(f"!! OAuth code exchange failed: {e}")
 
-        if not access_token:
-            self.send_error_json("access_token is required")
-            return
-
-        self.send_response(HTTPStatus.OK)
-        self.send_header(
-            "Set-Cookie",
-            f"sb_access_token={access_token}; Path=/; HttpOnly; SameSite=Lax"
-        )
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", "/?restore=1" if access_token else "/")
+        if access_token:
+            self.send_header(
+                "Set-Cookie",
+                f"sb_access_token={access_token}; Path=/; HttpOnly; SameSite=Lax{secure}"
+            )
         if refresh_token:
             self.send_header(
                 "Set-Cookie",
-                f"sb_refresh_token={refresh_token}; Path=/; HttpOnly; SameSite=Lax"
+                f"sb_refresh_token={refresh_token}; Path=/; HttpOnly; SameSite=Lax{secure}"
             )
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Set-Cookie", f"sb_pkce_verifier=; Path=/; Max-Age=0; HttpOnly{secure}")
         self.end_headers()
-        self.wfile.write(b'{"ok":true}')
 
     def handle_auth_me(self):
         """Return the current user from session cookie, or 401."""
@@ -1078,9 +1182,10 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def handle_auth_signout(self):
         """Clear session cookies."""
+        secure = cookie_secure_suffix(read_env())
         self.send_response(HTTPStatus.OK)
-        self.send_header("Set-Cookie", "sb_access_token=; Path=/; Max-Age=0; HttpOnly")
-        self.send_header("Set-Cookie", "sb_refresh_token=; Path=/; Max-Age=0; HttpOnly")
+        self.send_header("Set-Cookie", f"sb_access_token=; Path=/; Max-Age=0; HttpOnly{secure}")
+        self.send_header("Set-Cookie", f"sb_refresh_token=; Path=/; Max-Age=0; HttpOnly{secure}")
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(b'{"ok":true}')
@@ -1128,9 +1233,10 @@ class AppHandler(SimpleHTTPRequestHandler):
             return None
 
         new_refresh = session.get("refresh_token", refresh_token)
+        secure = cookie_secure_suffix(env)
         self._pending_set_cookies = [
-            f"sb_access_token={new_access}; Path=/; HttpOnly; SameSite=Lax",
-            f"sb_refresh_token={new_refresh}; Path=/; HttpOnly; SameSite=Lax",
+            f"sb_access_token={new_access}; Path=/; HttpOnly; SameSite=Lax{secure}",
+            f"sb_refresh_token={new_refresh}; Path=/; HttpOnly; SameSite=Lax{secure}",
         ]
         return user
 
@@ -1227,8 +1333,12 @@ class AppHandler(SimpleHTTPRequestHandler):
             )
             where_values.extend([f"%{query}%"] * 4)
         if city:
-            where.append("lower(city) = %s")
-            where_values.append(city)
+            # Match the searched city plus any of its known administrative
+            # sub-divisions (see CITY_SUBDIVISIONS) — a property tagged with
+            # city="Jamshed Town" should still turn up when searching
+            # "Karachi", since that's genuinely the same city to a user.
+            where.append("lower(city) = ANY(%s)")
+            where_values.append(list(CITY_ALIASES.get(city, {city})))
 
         order_by = "created_at desc"
         if lat and lng:
@@ -1569,7 +1679,11 @@ class AppHandler(SimpleHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
-def run(host="0.0.0.0", port=8000):
+def run(host="0.0.0.0", port=None):
+    # Most hosting platforms assign the port dynamically via $PORT and expect
+    # the app to bind to whatever they provide, not a hardcoded value.
+    if port is None:
+        port = int(os.environ.get("PORT", 8000))
     try:
         verify_db()
     except Exception as e:
