@@ -1554,6 +1554,16 @@ class RequestHandlerMixin:
 # allows a long-running process to bind its own port).
 # ---------------------------------------------------------------------------
 class AppHandler(RequestHandlerMixin, SimpleHTTPRequestHandler):
+    # Without this, SimpleHTTPRequestHandler falls back to the system's
+    # mimetypes database, which disagreed with WSGIHandler's explicit
+    # STATIC_CONTENT_TYPES on .js (text/javascript vs application/javascript)
+    # depending on Python/OS version -- harmless to browsers either way, but
+    # keeps both transports serving identical headers for the same file.
+    extensions_map = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        **STATIC_CONTENT_TYPES,
+    }
+
     def translate_path(self, path):
         return str(resolve_static_path(path))
 
