@@ -722,6 +722,10 @@ function renderEmptyLocationState() {
     ? `But <strong>${preview.review_count} ${preview.review_count === 1 ? "review" : "reviews"}</strong> exist within 250 m — add yours to build a record for this specific address.`
     : "Be the first to share your experience here.";
 
+  // Same two-column stats-columns layout as renderPropertyDetail (a
+  // registered property with zero reviews) -- an unregistered location is
+  // just the same "no data yet" state one step earlier, so it should look
+  // like it, not like a distinct page type.
   return `
     ${name ? `
     <div class="detail-title-row" style="margin-bottom:16px;">
@@ -736,13 +740,20 @@ function renderEmptyLocationState() {
 
     <p class="empty-copy" style="margin-bottom:16px;">${noPropertyMsg} ${nearbyNote}</p>
 
-    ${hasNeigh ? `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+    <div class="stats-columns">
       <div class="stats-col">
-        <div class="stats-col-header"><span class="stats-col-title">Neighbourhood</span></div>
-        <div class="stats-col-body">${neighHtml}</div>
+        <div class="stats-col-header">
+          <span class="stats-col-title">Property Conditions</span>
+        </div>
+        <div class="stats-col-body"><p class="stats-col-empty">No data yet</p></div>
       </div>
-    </div>` : ""}
+      <div class="stats-col">
+        <div class="stats-col-header">
+          <span class="stats-col-title">Neighbourhood</span>
+        </div>
+        <div class="stats-col-body">${hasNeigh ? neighHtml : `<p class="stats-col-empty">No data yet</p>`}</div>
+      </div>
+    </div>
   `;
 }
 

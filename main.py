@@ -1,6 +1,8 @@
 import base64
 import hashlib
+import io
 import json
+import mimetypes
 import os
 import secrets
 import uuid
@@ -8,11 +10,9 @@ from datetime import date, datetime
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
-
-import psycopg
-from psycopg.rows import dict_row
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -200,13 +200,13 @@ LABEL_MAP = {
     "maintenance":          {5: "Good",        3: "Fair",            1: "Poor"},
     "building_maintenance": {5: "Good",        3: "Fair",            1: "Poor"},
     "standby_power":        {5: "Generator",   3: "UPS",             1: "None"},
-    "elevator":             {5: "Present",                           1: "Stairs"},
+    "elevator":              {5: "Present",                          1: "Stairs"},
     "parking":              {5: "Present",                           1: "None"},
     "noise":                {5: "Low",         3: "Moderate",        1: "High"},
     "security":             {5: "Safe",        3: "Average",         1: "Unsafe"},
     "cleanliness":          {5: "Good",        3: "Fair",            1: "Poor"},
     "traffic":              {5: "Low",         3: "Moderate",        1: "High"},
-    "flooding":             {5: "None",        3: "Minor",           1: "Severe"},
+    "flooding":              {5: "None",       3: "Minor",           1: "Severe"},
 }
 
 # ---------------------------------------------------------------------------
@@ -272,97 +272,72 @@ def maptiler_key(env):
 
 
 # ---------------------------------------------------------------------------
-# Mock DB (fallback when no credentials)
+# Supabase REST/RPC client
 # ---------------------------------------------------------------------------
-class MockCursor:
-    def __init__(self):
-        self.description = []
-        self._last_id = str(uuid.uuid4())
-
-    def execute(self, *args, **kwargs):
-        pass
-
-    def fetchone(self):
-        return {
-            "id": self._last_id,
-            "name": "Mock Property",
-            "property_type": "house",
-            "address": "123 Mock Street",
-            "area": "Mock Area",
-            "city": "Mock City",
-            "latitude": 30.3753,
-            "longitude": 69.3451,
-            "created_at": datetime.now(),
-            "updated_at": datetime.now(),
-        }
-
-    def fetchall(self):
-        return []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass
+# Replaces a direct psycopg connection to Postgres. Everything now talks to
+# Supabase's PostgREST API over HTTPS instead of raw TCP to port 5432 — that
+# means (a) it runs on hosts that only allow outbound HTTP(S), and (b)
+# Postgres RLS policies are enforced for real, since PostgREST always
+# authenticates as the anon/authenticated role, never a superuser that
+# bypasses RLS the way the old direct connection did.
+SUPABASE_ANON_KEY_ENV = "SUPABASE_ANON_KEY"
 
 
-class MockConn:
-    def cursor(self, *args, **kwargs):
-        return MockCursor()
+def get_supabase_anon_key(env):
+    return env.get(SUPABASE_ANON_KEY_ENV) or env.get("ANON_KEY") or ""
 
-    def commit(self):
-        pass
 
-    def __enter__(self):
-        return self
+class SupabaseError(Exception):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
 
-    def __exit__(self, *args):
-        pass
 
-# ---------------------------------------------------------------------------
-# DB connection
-# ---------------------------------------------------------------------------
-def connect():
-    env = read_env()
-    project_ref = env.get("SUPABASE_PROJECT_REF") or env.get("Project_Ref")
-    password     = env.get("SUPABASE_DB_PASSWORD") or env.get("DB_Password")
-    host         = env.get("SUPABASE_DB_HOST") or (
-        f"db.{project_ref}.supabase.co" if project_ref else ""
-    )
-    user         = env.get("SUPABASE_DB_USER", "postgres")
-    database     = env.get("SUPABASE_DB_NAME", "postgres")
-    port         = env.get("SUPABASE_DB_PORT", "5432")
-
-    if not host or not password:
-        print("!! WARNING: Using Mock Database — reviews will NOT persist.")
-        return MockConn()
-
+def _supabase_request(env, method, path, *, params=None, body=None, bearer=None, prefer=None):
+    base = supabase_url(env)
+    if not base:
+        raise SupabaseError(503, "Supabase URL not configured")
+    query = f"?{urlencode(params)}" if params else ""
+    url = f"{base}{path}{query}"
+    headers = {
+        "apikey":        get_supabase_anon_key(env),
+        "Authorization": f"Bearer {bearer or get_supabase_anon_key(env)}",
+        "Content-Type":  "application/json",
+    }
+    if prefer:
+        headers["Prefer"] = prefer
+    data = json.dumps(body).encode() if body is not None else None
+    req = Request(url, data=data, headers=headers, method=method)
     try:
-        return psycopg.connect(
-            host=host,
-            port=port,
-            dbname=database,
-            user=user,
-            password=password,
-            sslmode="require",
-            row_factory=dict_row,
-        )
-    except Exception as e:
-        print(f"!! CRITICAL: Connection to Supabase failed: {e}")
-        return MockConn()
+        with urlopen(req, timeout=10) as resp:
+            raw = resp.read()
+            return json.loads(raw.decode()) if raw else None
+    except HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        raise SupabaseError(exc.code, detail) from exc
 
 
-def verify_db():
-    with connect() as conn:
-        if isinstance(conn, MockConn):
-            return
-        with conn.cursor() as cur:
-            cur.execute(
-                "select to_regclass('public.properties') as tbl"
-            )
-            row = cur.fetchone()
-            if row and row.get("tbl") is None:
-                raise RuntimeError("Schema missing: public.properties not found")
+def supabase_select(env, table, params=None, bearer=None):
+    return _supabase_request(env, "GET", f"/rest/v1/{table}", params=params, bearer=bearer) or []
+
+
+def supabase_insert(env, table, row, bearer=None):
+    result = _supabase_request(
+        env, "POST", f"/rest/v1/{table}", body=row, bearer=bearer,
+        prefer="return=representation",
+    )
+    return result[0] if result else None
+
+
+def supabase_delete(env, table, params, bearer=None):
+    return _supabase_request(
+        env, "DELETE", f"/rest/v1/{table}", params=params, bearer=bearer,
+        prefer="return=representation",
+    ) or []
+
+
+def supabase_rpc(env, fn_name, args, bearer=None):
+    return _supabase_request(env, "POST", f"/rest/v1/rpc/{fn_name}", body=args, bearer=bearer) or []
 
 
 # ---------------------------------------------------------------------------
@@ -635,13 +610,13 @@ def aggregate_field(reviews, api_field):
 # ---------------------------------------------------------------------------
 # Property summary — Fix #13: no more N+1 queries
 # ---------------------------------------------------------------------------
-def property_summary(conn, property_row, reviews_by_id=None, nearby_reviews_by_id=None):
+def property_summary(env, property_row, reviews_by_id=None, nearby_reviews_by_id=None, bearer=None):
     """
     Build the full property dict with stats and comments.
 
     When called from list view, reviews_by_id and nearby_reviews_by_id are
-    pre-fetched dicts keyed by property_id (batch mode — no extra queries).
-    When called for a single property, fetches its own data (2 queries only).
+    pre-fetched dicts keyed by property_id (batch mode — no extra requests).
+    When called for a single property, fetches its own data via RPC calls.
     """
     if property_row is None:
         return {}
@@ -652,47 +627,30 @@ def property_summary(conn, property_row, reviews_by_id=None, nearby_reviews_by_i
     lng = property_data.get("longitude")
 
     property_data.pop("location", None)
-    if "distance_m" in property_data and property_data["distance_m"] is not None:
+    if property_data.get("distance_m") is not None:
         property_data["distance_km"] = round(
             float(property_data.pop("distance_m")) / 1000, 3
         )
+    else:
+        property_data.pop("distance_m", None)
 
     # Fetch reviews if not pre-supplied (single property page)
     if reviews_by_id is None:
         reviews = []
         nearby_reviews = []
         if property_id and lat is not None and lng is not None:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    select r.*, pr.display_name as reviewer_name
-                    from public.property_reviews r
-                    left join public.profiles pr on r.user_id = pr.id
-                    where r.property_id = %s
-                      and r.visibility = 'public'
-                      and r.moderation_status = 'active'
-                    order by r.created_at desc
-                    """,
-                    (property_id,),
+            try:
+                reviews = supabase_rpc(
+                    env, "batch_reviews_for_properties",
+                    {"property_ids": [property_id]}, bearer=bearer,
                 )
-                reviews = [dict(row) for row in (cur.fetchall() or [])]
-
-                cur.execute(
-                    """
-                    select r.*
-                    from public.property_reviews r
-                    join public.properties p on r.property_id = p.id
-                    where st_dwithin(
-                            p.location,
-                            st_setsrid(st_makepoint(%s, %s), 4326)::geography,
-                            %s
-                          )
-                      and r.visibility = 'public'
-                      and r.moderation_status = 'active'
-                    """,
-                    (lng, lat, NEIGHBOURHOOD_RADIUS_M),
+                nearby_reviews = supabase_rpc(
+                    env, "nearby_property_reviews",
+                    {"lat": lat, "lng": lng, "radius_m": NEIGHBOURHOOD_RADIUS_M},
+                    bearer=bearer,
                 )
-                nearby_reviews = [dict(row) for row in (cur.fetchall() or [])]
+            except SupabaseError as e:
+                print(f"!! Supabase ERROR in property_summary: {e}")
     else:
         reviews        = reviews_by_id.get(property_id, [])
         nearby_reviews = nearby_reviews_by_id.get(property_id, [])
@@ -754,64 +712,42 @@ def property_summary(conn, property_row, reviews_by_id=None, nearby_reviews_by_i
 # ---------------------------------------------------------------------------
 # Batch-fetch helpers (Fix #13 — used by list endpoint)
 # ---------------------------------------------------------------------------
-def batch_fetch_reviews(conn, property_ids, lat_lng_by_id):
+def batch_fetch_reviews(env, property_ids, lat_lng_by_id, bearer=None):
     """
     Returns (reviews_by_id, nearby_reviews_by_id) dicts.
-    Fires exactly 2 SQL queries regardless of how many properties are in the list.
+    Fires exactly 2 RPC calls regardless of how many properties are in the list.
     """
-    if not property_ids or isinstance(conn, MockConn):
+    if not property_ids:
         return {}, {}
 
     id_list = list(property_ids)
 
-    with conn.cursor() as cur:
-        # All reviews for the listed properties (with reviewer names)
-        cur.execute(
-            """
-            select r.*, pr.display_name as reviewer_name
-            from public.property_reviews r
-            left join public.profiles pr on r.user_id = pr.id
-            where r.property_id = any(%s)
-              and r.visibility = 'public'
-              and r.moderation_status = 'active'
-            order by r.created_at desc
-            """,
-            (id_list,),
+    try:
+        all_reviews = supabase_rpc(
+            env, "batch_reviews_for_properties", {"property_ids": id_list}, bearer=bearer
         )
-        all_reviews = [dict(row) for row in (cur.fetchall() or [])]
+    except SupabaseError as e:
+        print(f"!! Supabase ERROR in batch_fetch_reviews (reviews): {e}")
+        all_reviews = []
 
-        # All nearby reviews — one spatial query that covers all bounding boxes
-        # Strategy: union the individual nearby queries using a single lateral join
-        # We build the query dynamically with the property coords
-        nearby_by_id = {pid: [] for pid in id_list}
-
-        if lat_lng_by_id:
-            # Fetch nearby reviews for every property in one query using
-            # a VALUES list as a reference table
-            values_rows = ", ".join(
-                f"('{pid}'::uuid, {lng}, {lat})"
-                for pid, (lat, lng) in lat_lng_by_id.items()
+    nearby_by_id = {pid: [] for pid in id_list}
+    if lat_lng_by_id:
+        anchors = [
+            {"id": pid, "lat": lat, "lng": lng}
+            for pid, (lat, lng) in lat_lng_by_id.items()
+        ]
+        try:
+            nearby_rows = supabase_rpc(
+                env, "batch_nearby_reviews",
+                {"anchors": anchors, "radius_m": NEIGHBOURHOOD_RADIUS_M},
+                bearer=bearer,
             )
-            cur.execute(
-                f"""
-                select ref.anchor_id, r.*
-                from (values {values_rows}) as ref(anchor_id, ref_lng, ref_lat)
-                join public.property_reviews r
-                  on true
-                join public.properties p on r.property_id = p.id
-                where st_dwithin(
-                        p.location,
-                        st_setsrid(st_makepoint(ref.ref_lng, ref.ref_lat), 4326)::geography,
-                        {NEIGHBOURHOOD_RADIUS_M}
-                      )
-                  and r.visibility = 'public'
-                  and r.moderation_status = 'active'
-                """
-            )
-            for row in (cur.fetchall() or []):
-                r = dict(row)
-                anchor = str(r.pop("anchor_id"))
-                nearby_by_id.setdefault(anchor, []).append(r)
+        except SupabaseError as e:
+            print(f"!! Supabase ERROR in batch_fetch_reviews (nearby): {e}")
+            nearby_rows = []
+        for row in nearby_rows:
+            anchor = str(row.pop("anchor_id"))
+            nearby_by_id.setdefault(anchor, []).append(row)
 
     reviews_by_id = {pid: [] for pid in id_list}
     for r in all_reviews:
@@ -823,12 +759,6 @@ def batch_fetch_reviews(conn, property_ids, lat_lng_by_id):
 # ---------------------------------------------------------------------------
 # Auth helpers (Supabase Auth via PKCE / server-side session cookie)
 # ---------------------------------------------------------------------------
-SUPABASE_ANON_KEY_ENV = "SUPABASE_ANON_KEY"
-
-def get_supabase_anon_key(env):
-    return env.get(SUPABASE_ANON_KEY_ENV) or env.get("ANON_KEY") or ""
-
-
 def generate_pkce_pair():
     """
     RFC 7636 PKCE pair: a random verifier, and its SHA-256 challenge
@@ -926,32 +856,54 @@ def parse_session_cookie(handler):
     return tokens.get("sb_access_token"), tokens.get("sb_refresh_token")
 
 # ---------------------------------------------------------------------------
-# HTTP Handler
+# Static file resolution (shared by both transports below)
 # ---------------------------------------------------------------------------
-class AppHandler(SimpleHTTPRequestHandler):
-    extensions_map = {
-        **SimpleHTTPRequestHandler.extensions_map,
-        ".js":  "application/javascript",
-        ".css": "text/css",
-    }
+def resolve_static_path(path):
+    parsed = urlparse(path)
+    requested = parsed.path
+    static_root = STATIC_DIR.resolve()
+    candidate = (STATIC_DIR / requested.lstrip("/")).resolve()
+    within_static = candidate == static_root or static_root in candidate.parents
+    # SPA fallback: any non-API route without a matching static file
+    # (e.g. /property/<id>, /search) gets the app shell so client-side
+    # routing can take over on direct load / hard refresh.
+    if requested != "/" and within_static and candidate.is_file():
+        return candidate
+    return STATIC_DIR / "index.html"
 
-    def translate_path(self, path):
-        parsed = urlparse(path)
-        requested = parsed.path
-        static_root = STATIC_DIR.resolve()
-        candidate = (STATIC_DIR / requested.lstrip("/")).resolve()
-        within_static = candidate == static_root or static_root in candidate.parents
-        # SPA fallback: any non-API route without a matching static file
-        # (e.g. /property/<id>, /search) gets the app shell so client-side
-        # routing can take over on direct load / hard refresh.
-        if requested != "/" and within_static and candidate.is_file():
-            return str(candidate)
-        return str(STATIC_DIR / "index.html")
 
-    def end_headers(self):
-        self.send_header("Cache-Control", "no-store")
-        super().end_headers()
+STATIC_CONTENT_TYPES = {
+    ".html": "text/html",
+    ".js":   "application/javascript",
+    ".css":  "text/css",
+    ".json": "application/json",
+    ".png":  "image/png",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".svg":  "image/svg+xml",
+    ".ico":  "image/x-icon",
+}
 
+
+def guess_static_content_type(path):
+    return (
+        STATIC_CONTENT_TYPES.get(path.suffix.lower())
+        or mimetypes.guess_type(str(path))[0]
+        or "application/octet-stream"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Request handling — routing + all /api/* logic, written against a small
+# request/response surface (self.path, self.headers, self.rfile, self.wfile,
+# send_response/send_header/end_headers/serve_static) rather than any one
+# transport. Two concrete transports implement that surface below:
+# AppHandler (a real socket, via http.server — used by `python3 main.py`
+# locally or on any host that allows a long-running process) and
+# WSGIHandler (a WSGI environ — used by hosts that only allow WSGI web apps,
+# e.g. PythonAnywhere's free tier, which has no "always-on task" option).
+# ---------------------------------------------------------------------------
+class RequestHandlerMixin:
     def send_json(self, payload, status=HTTPStatus.OK):
         encoded = json.dumps(payload).encode("utf-8")
         self.send_response(status)
@@ -1006,7 +958,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.handle_get_property(property_id)
             return
 
-        super().do_GET()
+        self.serve_static()
 
     def do_POST(self):
         parsed = urlparse(self.path)
@@ -1046,36 +998,40 @@ class AppHandler(SimpleHTTPRequestHandler):
         except (ValueError, AttributeError):
             self.send_error_json("Invalid review ID", HTTPStatus.BAD_REQUEST)
             return
+
+        access_token, _ = parse_session_cookie(self)
+        env = read_env()
         try:
-            with connect() as conn:
-                with conn.cursor(row_factory=dict_row) as cur:
-                    cur.execute(
-                        "SELECT user_id, property_id FROM public.property_reviews WHERE id = %s",
-                        (review_id,),
-                    )
-                    row = cur.fetchone()
-                    if not row:
-                        self.send_error_json("Review not found", HTTPStatus.NOT_FOUND)
-                        return
-                    if str(row["user_id"]) != user_id:
-                        self.send_error_json("Not your review", HTTPStatus.FORBIDDEN)
-                        return
-                    property_id = str(row["property_id"])
-                    cur.execute(
-                        "DELETE FROM public.property_reviews WHERE id = %s", (review_id,)
-                    )
-                    conn.commit()
-
-                    cur.execute("SELECT * FROM public.properties WHERE id = %s", (property_id,))
-                    prop_row = cur.fetchone()
-
-                # property_summary must run inside the with block while conn is open
-                if prop_row:
-                    summary = property_summary(conn, prop_row)
-                    self.send_json({"property": summary})
+            # RLS scopes this delete to rows owned by the caller, so an empty
+            # result means "not found" or "not yours" — indistinguishable
+            # from the delete alone. Only pay for the extra lookup on that
+            # path, to tell the two apart for the response.
+            deleted = supabase_delete(
+                env, "property_reviews",
+                {"id": f"eq.{review_id}", "select": "id,property_id"},
+                bearer=access_token,
+            )
+            if not deleted:
+                still_exists = supabase_select(
+                    env, "property_reviews", {"id": f"eq.{review_id}", "limit": "1"}
+                )
+                if still_exists:
+                    self.send_error_json("Not your review", HTTPStatus.FORBIDDEN)
                 else:
-                    self.send_json({"ok": True})
-        except Exception as exc:
+                    self.send_error_json("Review not found", HTTPStatus.NOT_FOUND)
+                return
+
+            property_id = str(deleted[0]["property_id"])
+            prop_matches = supabase_select(
+                env, "properties", {"id": f"eq.{property_id}", "limit": "1"}
+            )
+            prop_row = prop_matches[0] if prop_matches else None
+            if prop_row:
+                summary = property_summary(env, prop_row, bearer=access_token)
+                self.send_json({"property": summary})
+            else:
+                self.send_json({"ok": True})
+        except SupabaseError as exc:
             self.send_error_json(f"Delete failed: {exc}", HTTPStatus.INTERNAL_SERVER_ERROR)
 
     # ------------------------------------------------------------------
@@ -1246,12 +1202,10 @@ class AppHandler(SimpleHTTPRequestHandler):
     def handle_config(self):
         env = read_env()
         self.send_json({
-            "hasLocationIqKey":    bool(locationiq_key(env)),
-            "supabaseUrl":         supabase_url(env),
-            "hasSupabasePassword": bool(
-                env.get("SUPABASE_DB_PASSWORD") or env.get("DB_Password")
-            ),
-            "maptilerApiKey":      maptiler_key(env),
+            "hasLocationIqKey": bool(locationiq_key(env)),
+            "supabaseUrl":      supabase_url(env),
+            "hasSupabaseKey":   bool(get_supabase_anon_key(env)),
+            "maptilerApiKey":   maptiler_key(env),
         })
 
     # ------------------------------------------------------------------
@@ -1321,95 +1275,66 @@ class AppHandler(SimpleHTTPRequestHandler):
         lng        = params.get("lng",       [""])[0]
         radius_km  = params.get("radius_km", ["0.075"])[0]
 
-        select_extra = ""
-        select_values = []
-        where, where_values = [], []
-
-        if query:
-            where.append(
-                "(lower(name) like %s or lower(address) like %s "
-                "or lower(area) like %s "
-                "or lower(coalesce(external_display_name, '')) like %s)"
-            )
-            where_values.extend([f"%{query}%"] * 4)
-        if city:
-            # Match the searched city plus any of its known administrative
-            # sub-divisions (see CITY_SUBDIVISIONS) — a property tagged with
-            # city="Jamshed Town" should still turn up when searching
-            # "Karachi", since that's genuinely the same city to a user.
-            where.append("lower(city) = ANY(%s)")
-            where_values.append(list(CITY_ALIASES.get(city, {city})))
-
-        order_by = "created_at desc"
+        rpc_args = {
+            "search_query": query or None,
+            "city_aliases": list(CITY_ALIASES.get(city, {city})) if city else None,
+            "origin_lat":   None,
+            "origin_lng":   None,
+            "radius_m":     None,
+        }
         if lat and lng:
             try:
-                origin_lat = float(lat)
-                origin_lng = float(lng)
-                radius_m   = float(radius_km) * 1000
+                rpc_args["origin_lat"] = float(lat)
+                rpc_args["origin_lng"] = float(lng)
+                rpc_args["radius_m"]   = float(radius_km) * 1000
             except ValueError:
                 self.send_error_json("lat, lng, and radius_km must be numbers")
                 return
 
-            point = "st_setsrid(st_makepoint(%s, %s), 4326)::geography"
-            select_extra = f", st_distance(location, {point}) as distance_m"
-            select_values.extend([origin_lng, origin_lat])
-            where.append(f"st_dwithin(location, {point}, %s)")
-            where_values.extend([origin_lng, origin_lat, radius_m])
-            order_by = "distance_m asc, created_at desc"
+        env = read_env()
+        try:
+            rows = supabase_rpc(env, "search_properties", rpc_args)
+        except SupabaseError as e:
+            print(f"!! Supabase ERROR in list_properties: {e}")
+            self.send_error_json("Database query failed.")
+            return
 
-        sql = f"select *{select_extra} from public.properties"
-        if where:
-            sql += " where " + " and ".join(where)
-        sql += f" order by {order_by} limit 50"
+        if not rows:
+            self.send_json({"properties": []})
+            return
 
-        with connect() as conn:
-            all_values = select_values + where_values
-            with conn.cursor() as cur:
-                try:
-                    cur.execute(sql, all_values)
-                    rows = cur.fetchall() or []
-                except Exception as e:
-                    print(f"!! SQL ERROR in list_properties: {e}")
-                    self.send_error_json("Database query failed.")
-                    return
+        # Batch-fetch all reviews in 2 RPC calls
+        property_ids  = [str(r["id"]) for r in rows]
+        lat_lng_by_id = {
+            str(r["id"]): (r["latitude"], r["longitude"])
+            for r in rows
+            if r.get("latitude") is not None and r.get("longitude") is not None
+        }
+        reviews_by_id, nearby_by_id = batch_fetch_reviews(env, property_ids, lat_lng_by_id)
 
-            if not rows:
-                self.send_json({"properties": []})
-                return
-
-            # Batch-fetch all reviews in 2 queries
-            property_ids   = [str(r["id"]) for r in rows]
-            lat_lng_by_id  = {
-                str(r["id"]): (r["latitude"], r["longitude"])
-                for r in rows
-                if r.get("latitude") is not None and r.get("longitude") is not None
-            }
-            reviews_by_id, nearby_by_id = batch_fetch_reviews(
-                conn, property_ids, lat_lng_by_id
-            )
-
-            self.send_json({
-                "properties": [
-                    property_summary(conn, row, reviews_by_id, nearby_by_id)
-                    for row in rows
-                ]
-            })
+        self.send_json({
+            "properties": [
+                property_summary(env, row, reviews_by_id, nearby_by_id)
+                for row in rows
+            ]
+        })
 
     # ------------------------------------------------------------------
     # Single property
     # ------------------------------------------------------------------
     def handle_get_property(self, property_id):
-        with connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "select * from public.properties where id = %s",
-                    (property_id,),
-                )
-                row = cur.fetchone()
-            if row is None:
-                self.send_error_json("Property not found", HTTPStatus.NOT_FOUND)
-                return
-            self.send_json({"property": property_summary(conn, row)})
+        env = read_env()
+        try:
+            matches = supabase_select(
+                env, "properties", {"id": f"eq.{property_id}", "limit": "1"}
+            )
+        except SupabaseError as e:
+            self.send_error_json(f"Database query failed: {e}", HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        if not matches:
+            self.send_error_json("Property not found", HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"property": property_summary(env, matches[0])})
 
     # ------------------------------------------------------------------
     # Neighbourhood preview (for unregistered map locations)
@@ -1423,24 +1348,15 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.send_error_json("lat and lng are required numbers")
             return
 
-        with connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    select r.*
-                    from public.property_reviews r
-                    join public.properties p on r.property_id = p.id
-                    where st_dwithin(
-                            p.location,
-                            st_setsrid(st_makepoint(%s, %s), 4326)::geography,
-                            %s
-                          )
-                      and r.visibility = 'public'
-                      and r.moderation_status = 'active'
-                    """,
-                    (lng, lat, NEIGHBOURHOOD_RADIUS_M),
-                )
-                nearby_reviews = [dict(row) for row in (cur.fetchall() or [])]
+        env = read_env()
+        try:
+            nearby_reviews = supabase_rpc(
+                env, "nearby_property_reviews",
+                {"lat": lat, "lng": lng, "radius_m": NEIGHBOURHOOD_RADIUS_M},
+            )
+        except SupabaseError as e:
+            self.send_error_json(f"Database query failed: {e}", HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
 
         neighborhood_stats = {}
         for field in NEIGHBORHOOD_FIELDS:
@@ -1462,59 +1378,45 @@ class AppHandler(SimpleHTTPRequestHandler):
         })
 
     # ------------------------------------------------------------------
-    # Create property
+    # Create property — now requires sign-in (previously unauthenticated;
+    # RLS's "created_by = auth.uid()" insert check never actually ran
+    # because the old connection used the postgres superuser role, which
+    # bypasses RLS entirely).
     # ------------------------------------------------------------------
     def handle_create_property(self):
         try:
             body = parse_body(self)
             data = validate_property(body)
-            external_payload = body.get("external_payload")
         except ValueError as exc:
             self.send_error_json(str(exc))
             return
 
-        with connect() as conn:
-            with conn.cursor() as cur:
-                try:
-                    cur.execute(
-                        """
-                        insert into public.properties
-                        (name, property_type, address, area, city, country,
-                         latitude, longitude, external_provider, external_place_id,
-                         external_display_name, google_place_id, google_place_name,
-                         google_formatted_address, map_provider, external_payload)
-                        values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                        returning *
-                        """,
-                        (
-                            data["name"],
-                            data["property_type"],
-                            data["address"],
-                            data["area"],
-                            data["city"],
-                            data["country"],
-                            data["latitude"],
-                            data["longitude"],
-                            data["external_provider"],
-                            data["external_place_id"],
-                            data["external_display_name"],
-                            data["google_place_id"],
-                            data["google_place_name"],
-                            data["google_formatted_address"],
-                            data["external_provider"],
-                            json.dumps(external_payload) if external_payload
-                            else json.dumps(data),
-                        ),
-                    )
-                    row = cur.fetchone()
-                    conn.commit()
-                    self.send_json(
-                        {"property": property_summary(conn, row)},
-                        HTTPStatus.CREATED,
-                    )
-                except Exception as e:
-                    print(f"!! SQL ERROR in create_property: {e}")
-                    self.send_error_json("Failed to create property in database.")
+        user_id = self._get_authenticated_user_id()
+        if not user_id:
+            self.send_error_json(
+                "Sign in with Google to add a property.", HTTPStatus.UNAUTHORIZED
+            )
+            return
+
+        access_token, _ = parse_session_cookie(self)
+        env = read_env()
+        row = {
+            **data,
+            "map_provider":     data["external_provider"],
+            "external_payload": body.get("external_payload") or data,
+            "created_by":       user_id,
+        }
+        try:
+            created = supabase_insert(env, "properties", row, bearer=access_token)
+        except SupabaseError as e:
+            print(f"!! Supabase ERROR in create_property: {e}")
+            self.send_error_json("Failed to create property in database.")
+            return
+
+        self.send_json(
+            {"property": property_summary(env, created, bearer=access_token)},
+            HTTPStatus.CREATED,
+        )
 
     # ------------------------------------------------------------------
     # Create review — Fix #1: real auth, Fix #9: smart property type
@@ -1536,144 +1438,215 @@ class AppHandler(SimpleHTTPRequestHandler):
             )
             return
 
-        with connect() as conn:
-            with conn.cursor() as cur:
-                try:
-                    if not property_id:
-                        place = body.get("place")
-                        if not place or not place.get("display_name"):
-                            self.send_error_json(
-                                "A valid geocoded address is required."
-                            )
-                            return
+        access_token, _ = parse_session_cookie(self)
+        env = read_env()
 
-                        lat = float(place["lat"])
-                        lng = float(place.get("lng") or place.get("lon"))
-                        existing = None
-
-                        if place.get("place_id"):
-                            cur.execute(
-                                """
-                                select * from public.properties
-                                where external_provider = %s
-                                  and external_place_id = %s
-                                limit 1
-                                """,
-                                (
-                                    place.get("provider", "locationiq"),
-                                    str(place["place_id"]),
-                                ),
-                            )
-                            existing = cur.fetchone()
-
-                        if not existing:
-                            cur.execute(
-                                """
-                                select * from public.properties
-                                where st_dwithin(
-                                    location,
-                                    st_setsrid(st_makepoint(%s, %s), 4326)::geography,
-                                    20
-                                )
-                                limit 1
-                                """,
-                                (lng, lat),
-                            )
-                            existing = cur.fetchone()
-
-                        if existing:
-                            property_row = existing
-                            property_id  = str(property_row.get("id"))
-                        else:
-                            name = (
-                                place.get("name")
-                                or place.get("display_name", "").split(",", 1)[0]
-                            )
-                            # Fix #9: guess property type from city
-                            ptype = guess_property_type(place.get("city", ""))
-                            cur.execute(
-                                """
-                                insert into public.properties
-                                (name, property_type, address, area, city, country,
-                                 latitude, longitude, external_provider,
-                                 external_place_id, external_display_name,
-                                 map_provider, external_payload)
-                                values (%s,%s,%s,%s,%s,'Pakistan',%s,%s,%s,%s,%s,%s,%s)
-                                returning *
-                                """,
-                                (
-                                    name,
-                                    ptype,
-                                    place.get("display_name"),
-                                    place.get("area") or "",
-                                    place.get("city") or "",
-                                    lat,
-                                    lng,
-                                    place.get("provider", "locationiq"),
-                                    str(place.get("place_id", "")),
-                                    place.get("display_name"),
-                                    "locationiq",
-                                    json.dumps(place.get("raw") or {}),
-                                ),
-                            )
-                            property_row = cur.fetchone()
-                            property_id  = str(property_row.get("id"))
-                    else:
-                        cur.execute(
-                            "select * from public.properties where id = %s",
-                            (property_id,),
-                        )
-                        property_row = cur.fetchone()
-                        if property_row is None:
-                            self.send_error_json(
-                                "Property not found", HTTPStatus.NOT_FOUND
-                            )
-                            return
-                        property_id = str(property_row.get("id"))
-
-                    cur.execute(
-                        """
-                        insert into public.property_reviews
-                        (property_id, user_id, contributor_role, lived_period,
-                         rent_range, hidden_costs, comment,
-                         electricity, water, gas, building_maintenance,
-                         elevator, parking, standby_power,
-                         noise, security, cleanliness, traffic, flooding)
-                        values (%s,%s,%s,%s,%s,%s,%s,
-                                %s,%s,%s,%s,%s,%s,%s,
-                                %s,%s,%s,%s,%s)
-                        """,
-                        (
-                            property_id,
-                            user_id,
-                            data["contributor_role"],
-                            data["lived_period"],
-                            data["rent_range"],
-                            data["hidden_costs"],
-                            data["comment"],
-                            data["load_shedding"],    # → electricity column
-                            data["water_supply"],     # → water column
-                            data["gas"],
-                            data["maintenance"],      # → building_maintenance column
-                            data["elevator"],
-                            data["parking"],
-                            data["standby_power"],
-                            data["noise"],
-                            data["security"],
-                            data["cleanliness"],
-                            data["traffic"],
-                            data["flooding"],
-                        ),
+        try:
+            if not property_id:
+                place = body.get("place")
+                if not place or not place.get("display_name"):
+                    self.send_error_json(
+                        "A valid geocoded address is required."
                     )
-                    conn.commit()
-                    print(f"++ Review saved: property {property_id}, user {user_id}")
-                    self.send_json(
-                        {"property": property_summary(conn, property_row)},
-                        HTTPStatus.CREATED,
+                    return
+
+                lat = float(place["lat"])
+                lng = float(place.get("lng") or place.get("lon"))
+                existing_row = None
+
+                if place.get("place_id"):
+                    matches = supabase_select(
+                        env, "properties",
+                        {
+                            "external_provider": f"eq.{place.get('provider', 'locationiq')}",
+                            "external_place_id": f"eq.{place['place_id']}",
+                            "limit": "1",
+                        },
+                        bearer=access_token,
                     )
-                except Exception as e:
-                    print(f"!! SQL ERROR in create_review: {e}")
-                    self.send_error_json(f"Database error: {e}")
+                    existing_row = matches[0] if matches else None
+
+                if not existing_row:
+                    nearby = supabase_rpc(
+                        env, "find_property_by_location",
+                        {"lat": lat, "lng": lng, "radius_m": 20},
+                        bearer=access_token,
+                    )
+                    existing_row = nearby[0] if nearby else None
+
+                if existing_row:
+                    property_row = existing_row
+                    property_id  = str(property_row.get("id"))
+                else:
+                    name = (
+                        place.get("name")
+                        or place.get("display_name", "").split(",", 1)[0]
+                    )
+                    # Fix #9: guess property type from city
+                    ptype = guess_property_type(place.get("city", ""))
+                    new_property = {
+                        "name":                  name,
+                        "property_type":         ptype,
+                        "address":               place.get("display_name"),
+                        "area":                  place.get("area") or "",
+                        "city":                  place.get("city") or "",
+                        "country":               "Pakistan",
+                        "latitude":              lat,
+                        "longitude":             lng,
+                        "external_provider":     place.get("provider", "locationiq"),
+                        "external_place_id":     str(place.get("place_id", "")),
+                        "external_display_name": place.get("display_name"),
+                        "map_provider":          "locationiq",
+                        "external_payload":      place.get("raw") or {},
+                        "created_by":            user_id,
+                    }
+                    property_row = supabase_insert(
+                        env, "properties", new_property, bearer=access_token
+                    )
+                    property_id  = str(property_row.get("id"))
+            else:
+                matches = supabase_select(
+                    env, "properties", {"id": f"eq.{property_id}", "limit": "1"},
+                    bearer=access_token,
+                )
+                property_row = matches[0] if matches else None
+                if property_row is None:
+                    self.send_error_json(
+                        "Property not found", HTTPStatus.NOT_FOUND
+                    )
+                    return
+                property_id = str(property_row.get("id"))
+
+            review_row = {
+                "property_id":          property_id,
+                "user_id":              user_id,
+                "contributor_role":     data["contributor_role"],
+                "lived_period":         data["lived_period"],
+                "rent_range":           data["rent_range"],
+                "hidden_costs":         data["hidden_costs"],
+                "comment":              data["comment"],
+                "electricity":          data["load_shedding"],    # → electricity column
+                "water":                data["water_supply"],     # → water column
+                "gas":                  data["gas"],
+                "building_maintenance": data["maintenance"],      # → building_maintenance column
+                "elevator":             data["elevator"],
+                "parking":              data["parking"],
+                "standby_power":        data["standby_power"],
+                "noise":                data["noise"],
+                "security":             data["security"],
+                "cleanliness":          data["cleanliness"],
+                "traffic":              data["traffic"],
+                "flooding":             data["flooding"],
+            }
+            supabase_insert(env, "property_reviews", review_row, bearer=access_token)
+            print(f"++ Review saved: property {property_id}, user {user_id}")
+            self.send_json(
+                {"property": property_summary(env, property_row, bearer=access_token)},
+                HTTPStatus.CREATED,
+            )
+        except SupabaseError as e:
+            print(f"!! SQL ERROR in create_review: {e}")
+            self.send_error_json(f"Database error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Transport 1: real socket, via http.server (local dev / any host that
+# allows a long-running process to bind its own port).
+# ---------------------------------------------------------------------------
+class AppHandler(RequestHandlerMixin, SimpleHTTPRequestHandler):
+    def translate_path(self, path):
+        return str(resolve_static_path(path))
+
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
+    def serve_static(self):
+        # Bypass RequestHandlerMixin in the MRO (super() here would hit
+        # RequestHandlerMixin.do_GET again, not the file-serving one) and go
+        # straight to SimpleHTTPRequestHandler's real static-file handler.
+        SimpleHTTPRequestHandler.do_GET(self)
+
+
+# ---------------------------------------------------------------------------
+# Transport 2: WSGI, for hosts that only allow a WSGI web app rather than a
+# custom always-on process (e.g. PythonAnywhere's free tier). Drives the
+# exact same RequestHandlerMixin routing/handler code as AppHandler; only
+# the request-in/response-out plumbing differs.
+# ---------------------------------------------------------------------------
+class _WSGIHeaders:
+    """Minimal `.get(key, default)` shim over a WSGI environ, matching the
+    subset of the http.client.HTTPMessage interface this app's handler
+    methods actually use (parse_body's Content-Length, cookie parsing)."""
+
+    def __init__(self, environ):
+        self._environ = environ
+
+    def get(self, key, default=None):
+        key = key.upper().replace("-", "_")
+        if key in ("CONTENT_TYPE", "CONTENT_LENGTH"):
+            return self._environ.get(key, default)
+        return self._environ.get(f"HTTP_{key}", default)
+
+
+class WSGIHandler(RequestHandlerMixin):
+    def __init__(self, environ):
+        query = environ.get("QUERY_STRING", "")
+        self.path = environ.get("PATH_INFO", "/") + (f"?{query}" if query else "")
+        self.headers = _WSGIHeaders(environ)
+        self.rfile = environ.get("wsgi.input")
+        self.wfile = io.BytesIO()
+        self.command = environ.get("REQUEST_METHOD", "GET")
+        self._status = HTTPStatus.OK
+        self._response_headers = []
+
+    def send_response(self, status, message=None):
+        self._status = status
+
+    def send_header(self, key, value):
+        self._response_headers.append((key, str(value)))
+
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+
+    def serve_static(self):
+        file_path = resolve_static_path(self.path)
+        try:
+            data = file_path.read_bytes()
+        except OSError:
+            self.send_response(HTTPStatus.NOT_FOUND)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", guess_static_content_type(file_path))
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def dispatch(self):
+        if self.command == "GET":
+            self.do_GET()
+        elif self.command == "POST":
+            self.do_POST()
+        elif self.command == "DELETE":
+            self.do_DELETE()
+        else:
+            self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        return self._status, self._response_headers, self.wfile.getvalue()
+
+
+def application(environ, start_response):
+    """WSGI entry point — point a WSGI host's config at `main.application`."""
+    handler = WSGIHandler(environ)
+    status, headers, body = handler.dispatch()
+    status_line = (
+        f"{status.value} {status.phrase}" if isinstance(status, HTTPStatus) else str(status)
+    )
+    start_response(status_line, headers)
+    return [body]
 
 
 # ---------------------------------------------------------------------------
@@ -1684,10 +1657,11 @@ def run(host="0.0.0.0", port=None):
     # the app to bind to whatever they provide, not a hardcoded value.
     if port is None:
         port = int(os.environ.get("PORT", 8000))
-    try:
-        verify_db()
-    except Exception as e:
-        print(f"!! Warning: DB verification failed ({e}).")
+
+    env = read_env()
+    if not supabase_url(env) or not get_supabase_anon_key(env):
+        print("!! WARNING: SUPABASE_URL / SUPABASE_ANON_KEY not set — API calls will fail.")
+
     server = ThreadingHTTPServer((host, port), AppHandler)
     print(f"Real Estate Reality running at http://{host}:{port}")
     server.serve_forever()
