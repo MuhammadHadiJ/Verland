@@ -6,7 +6,7 @@ const propertySpecificFields = [
   ["water_supply",   "Water supply"],
   ["gas",            "Gas availability"],
   ["maintenance",    "Maintenance quality"],
-  ["standby_power",  "Standby power (building)"],
+  ["standby_power",  "Standby power"],
   ["elevator",       "Elevator"],
   ["parking",        "Parking"],
 ];
@@ -613,28 +613,78 @@ function renderDetail() {
   syncUrl();
 }
 
+// Geocoder addresses arrive as "Name, V2JP+C9H, , Street, ..., Sindh, 75000,
+// Pakistan" — strip the duplicated name, plus-codes, empty segments, and the
+// province/postcode/country tail so list cards show only the useful part.
+function shortAddress(property) {
+  const DROP = new Set([
+    property.name, property.city, property.area,
+    "Sindh", "Punjab", "Khyber Pakhtunkhwa", "Balochistan", "Pakistan",
+  ]);
+  const segments = String(property.address || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) =>
+      s &&
+      !DROP.has(s) &&
+      !/^[A-Z0-9]{4,}\+[A-Z0-9]{2,}$/.test(s) &&   // plus-codes
+      !/^\d{4,6}$/.test(s)                          // postcodes
+    );
+  return segments.slice(0, 3).join(", ");
+}
+
 function renderPropertyList() {
-  const reviewWord = (n) => `${n} ${n === 1 ? "review" : "reviews"}`;
-  const cards = state.properties.map((p) => `
+  const cards = state.properties.map((p) => {
+    const reviewLine = p.review_count > 0
+      ? `<p class="review-count-line"><strong>${p.review_count} ${p.review_count === 1 ? "review" : "reviews"}</strong>${p.distance_km != null ? ` · ${p.distance_km} km away` : ""}</p>`
+      : `<p class="review-count-line none">No reviews yet · <span class="cta-inline">be the first</span></p>`;
+
+    return `
     <button class="property-card" data-id="${escapeHtml(p.id)}" type="button">
       <div class="property-card-body">
-        <span class="property-card-name">${escapeHtml(p.name)}</span>
-        <span class="property-card-addr">${escapeHtml(p.address)}</span>
-        <div class="property-card-meta">
-          <span class="pill">${escapeHtml(p.property_type)}</span>
-          <span class="pill">${escapeHtml(p.area)}, ${escapeHtml(p.city)}</span>
-          <span class="pill">${reviewWord(p.review_count)}</span>
-          ${p.distance_km != null ? `<span class="pill">${p.distance_km} km away</span>` : ""}
+        <div class="card-title-row">
+          <span class="property-card-name">${escapeHtml(p.name)}</span>
         </div>
+        <span class="property-card-addr">${escapeHtml([shortAddress(p), `${p.area}, ${p.city}`].filter(Boolean).join(" · "))}</span>
+        ${reviewLine}
       </div>
+      ${renderGlance(p)}
       <svg class="property-card-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
     </button>
-  `).join("");
+  `;
+  }).join("");
 
   return `
     <p class="results-count">${state.properties.length} properties found</p>
     <div class="property-cards">${cards}</div>
   `;
+}
+
+// Utility glance pills (electricity / water / gas) on search result cards
+const GLANCE_ICONS = {
+  load_shedding: `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 4.5 13.5H11L9.5 22 19 10h-6.5L13 2z"/></svg>`,
+  water_supply:  `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.7s6.5 7.4 6.5 12A6.5 6.5 0 0 1 5.5 14.7c0-4.6 6.5-12 6.5-12z"/></svg>`,
+  gas:           `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 22c-4 0-6.5-2.7-6.5-6.2 0-2.8 1.9-4.6 3.2-6.4C10 7.6 10.8 5.8 10.4 3c3.4 1.6 5 4.1 5.2 6.5.6-.6 1-1.5 1.1-2.6 1.5 1.8 1.8 4.5 1.8 5.4 0 5-2.5 9.7-6.5 9.7z"/></svg>`,
+};
+
+const GLANCE_TITLES = {
+  load_shedding: "Load shedding",
+  water_supply:  "Water supply",
+  gas:           "Gas availability",
+};
+
+function renderGlance(property) {
+  const stats = property.property_stats;
+  const pills = ["load_shedding", "water_supply", "gas"].map((field) => {
+    const winner = statWinner(stats && stats[field]);
+    if (!winner) return "";
+    const label = formatScore(field, winner.value);
+    return `<span class="val-pill" data-sentiment="${sentimentForValue(winner.value)}"
+      title="${escapeHtml(GLANCE_TITLES[field])}: ${escapeHtml(label)} (${winner.count} of ${winner.total})">
+      ${GLANCE_ICONS[field]}${escapeHtml(label)}</span>`;
+  }).filter(Boolean).join("");
+
+  return `<div class="glance">${pills || `<span class="glance-na">Not rated yet</span>`}</div>`;
 }
 
 function renderPropertyDetail(property) {
@@ -659,7 +709,7 @@ function renderPropertyDetail(property) {
     <div class="detail-title-row">
       <div class="detail-title">
         <h2>${escapeHtml(property.name)}</h2>
-        <p>${escapeHtml(property.address)}</p>
+        <p>${escapeHtml(shortAddress(property) || property.address)}</p>
       </div>
       <div class="detail-actions">
         ${renderAuthActions()}
@@ -667,21 +717,22 @@ function renderPropertyDetail(property) {
     </div>
 
     <div class="property-meta-row">
-      <span class="pill">${escapeHtml(property.property_type)}</span>
       <span class="pill">${escapeHtml(property.area)}, ${escapeHtml(property.city)}</span>
-      <span class="pill">${property.review_count} ${reviewWord}</span>
+      <span class="pill"><strong>${property.review_count}</strong>&nbsp;${reviewWord}</span>
     </div>
 
     <div class="stats-columns">
       <div class="stats-col">
         <div class="stats-col-header">
           <span class="stats-col-title">Property Conditions</span>
+          <span class="stats-col-note">Most common answer · how many reviewers gave it</span>
         </div>
         <div class="stats-col-body">${propStatsHtml}</div>
       </div>
       <div class="stats-col">
         <div class="stats-col-header">
           <span class="stats-col-title">Neighbourhood</span>
+          <span class="stats-col-note">Includes reviews within 250 m of this address</span>
         </div>
         <div class="stats-col-body">${neighStatsHtml}</div>
       </div>
@@ -744,12 +795,14 @@ function renderEmptyLocationState() {
       <div class="stats-col">
         <div class="stats-col-header">
           <span class="stats-col-title">Property Conditions</span>
+          <span class="stats-col-note">Most common answer · how many reviewers gave it</span>
         </div>
         <div class="stats-col-body"><p class="stats-col-empty">No data yet</p></div>
       </div>
       <div class="stats-col">
         <div class="stats-col-header">
           <span class="stats-col-title">Neighbourhood</span>
+          <span class="stats-col-note">Includes reviews within 250 m of this address</span>
         </div>
         <div class="stats-col-body">${hasNeigh ? neighHtml : `<p class="stats-col-empty">No data yet</p>`}</div>
       </div>
@@ -762,7 +815,7 @@ function renderEmptyLocationState() {
 // ---------------------------------------------------------------------------
 function renderAuthActions() {
   if (state.user) {
-    return `<button class="primary-button" id="openReviewButton">Add Review</button>`;
+    return `<button class="primary-button" id="openReviewButton">Write a review</button>`;
   }
   return `<button class="secondary-button" id="signInGoogle">Sign in to review</button>`;
 }
@@ -795,15 +848,23 @@ function statsHaveData(stats, fields) {
   return fields.some(([key]) => stats[key] && stats[key].total > 0);
 }
 
-function statSentiment(field, dataValue) {
-  const GOOD = new Set(["good", "safe", "low", "present", "rare", "reliable", "generator"]);
-  const BAD  = new Set(["poor", "unsafe", "high", "stairs", "not present", "frequent", "tanker dependent"]);
-  if (GOOD.has(dataValue)) return "good";
-  if (BAD.has(dataValue))  return "bad";
-  if (field === "flooding"      && dataValue === "none") return "good";
-  if (field === "standby_power" && dataValue === "none") return "bad";
-  if ((field === "elevator" || field === "parking") && dataValue === "none") return "bad";
-  return "neutral";
+// Sentiment comes straight from the stored value: 5 = good, 3 = mid, 1 = poor.
+function sentimentForValue(value) {
+  if (value >= 4) return "good";
+  if (value >= 2) return "mid";
+  return "poor";
+}
+
+// Most common answer for one field's counts ({ "5": n, "3": n, "1": n }).
+// Returns null when there's no data or the top answers are tied.
+function statWinner(s) {
+  if (!s || !s.total) return null;
+  const entries  = ["5", "3", "1"].map((v) => [v, s.counts[v] || 0]);
+  const maxCount = Math.max(...entries.map(([, c]) => c));
+  if (maxCount === 0) return null;
+  const winners = entries.filter(([, c]) => c === maxCount);
+  if (winners.length > 1) return null;
+  return { value: Number(winners[0][0]), count: maxCount, total: s.total };
 }
 
 function renderStats(stats, fields) {
@@ -813,34 +874,29 @@ function renderStats(stats, fields) {
     const s = stats[key];
     if (!s || s.total === 0) return "";
 
-    if (s.dominant) {
-      const dataValue = s.dominant.startsWith("Mostly ")
-        ? s.dominant.replace("Mostly ", "").toLowerCase()
-        : s.dominant.toLowerCase();
-      const maxCount  = Math.max(...["5","3","1"].map(v => s.counts[v] || 0));
-      const pct       = s.total > 0 ? Math.round(maxCount / s.total * 100) : 0;
-      const sentiment = statSentiment(key, dataValue);
+    const winner = statWinner(s);
+    if (winner) {
+      const word = formatScore(key, winner.value);
       return `
         <div class="agg-row">
           <span class="agg-field">${escapeHtml(label)}</span>
-          <div class="agg-bar-track">
-            <div class="agg-bar-fill" data-sentiment="${sentiment}" style="width:${pct}%"></div>
-          </div>
-          <span class="agg-value" data-sentiment="${sentiment}">${escapeHtml(s.dominant)}</span>
-        </div>`;
-    } else {
-      const pills = ["5","3","1"].filter(v => s.counts[v] > 0).map(v => {
-        const lbl     = formatScore(key, Number(v));
-        const pct     = Math.round((s.counts[v] / s.total) * 100);
-        const variant = v === "5" ? "good" : v === "1" ? "poor" : "";
-        return `<span class="dist-pill" data-variant="${variant}">${escapeHtml(lbl)} ${pct}%</span>`;
-      }).join("");
-      return `
-        <div class="agg-row is-tied">
-          <span class="agg-field">${escapeHtml(label)}</span>
-          <div class="agg-pills">${pills}</div>
+          <span class="agg">
+            <span class="agg-count">${winner.count} of ${winner.total}</span>
+            <span class="val-pill" data-sentiment="${sentimentForValue(winner.value)}">${escapeHtml(word)}</span>
+          </span>
         </div>`;
     }
+
+    // Tied — show each answer with its count
+    const pills = ["5","3","1"].filter(v => s.counts[v] > 0).map(v => {
+      const word = formatScore(key, Number(v));
+      return `<span class="val-pill" data-sentiment="${sentimentForValue(Number(v))}">${escapeHtml(word)} ×${s.counts[v]}</span>`;
+    }).join("");
+    return `
+      <div class="agg-row is-tied">
+        <span class="agg-field">${escapeHtml(label)}</span>
+        <div class="agg-pills">${pills}</div>
+      </div>`;
   }).join("");
 
   return rows || renderStatsEmpty();
@@ -860,54 +916,58 @@ function renderComments(property) {
 
   const TRASH = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>`;
 
+  // Full ratings start expanded where there's room, collapsed on phones
+  const detailsOpen = window.matchMedia("(min-width: 721px)").matches ? " open" : "";
+
   return property.comments.map((comment) => {
     const isOwn       = state.user && comment.reviewer_id === state.user.id;
-    const propScores  = propertySpecificFields.map(([f, label]) => scorePillHtml(f, label, comment.scores[f])).join("");
-    const neighScores = neighborhoodFields.map(([f, label])     => scorePillHtml(f, label, comment.scores[f])).join("");
+    const propRows    = propertySpecificFields.map(([f, label]) => miniRowHtml(f, label, comment.scores[f])).join("");
+    const neighRows   = neighborhoodFields.map(([f, label])     => miniRowHtml(f, label, comment.scores[f])).join("");
+    const isResident  = /resident|owner|landlord/i.test(comment.contributor_role || "");
 
     return `
     <article class="comment-card" data-review-id="${escapeHtml(comment.id)}">
       <div class="comment-header">
-        <div class="comment-identity">
+        <span class="comment-avatar" aria-hidden="true">${escapeHtml(getInitials(comment.reviewer_name))}</span>
+        <div class="comment-who">
           <strong class="comment-reviewer">${escapeHtml(comment.reviewer_name)}</strong>
-          <span class="comment-role-badge">${escapeHtml(comment.contributor_role)}</span>
+          ${comment.lived_period ? `<span class="comment-sub">Lived here ${escapeHtml(comment.lived_period)}</span>` : ""}
         </div>
+        <span class="comment-role-badge"${isResident ? "" : ` data-tone="neutral"`}>${escapeHtml(comment.contributor_role)}</span>
         <div class="comment-meta-right">
           <span class="comment-date">${new Date(comment.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</span>
           ${isOwn ? `<button class="delete-btn" data-action="delete-start" data-review-id="${escapeHtml(comment.id)}" aria-label="Delete review" title="Delete review">${TRASH}</button>` : ""}
         </div>
       </div>
 
-      ${(comment.lived_period || comment.rent_range || comment.hidden_costs) ? `
-      <div class="meta-row">
-        ${comment.lived_period  ? `<span class="pill">Period: ${escapeHtml(comment.lived_period)}</span>` : ""}
-        ${comment.rent_range    ? `<span class="pill">Rent: ${escapeHtml(comment.rent_range)}</span>` : ""}
-        ${comment.hidden_costs  ? `<span class="pill">Hidden costs: ${escapeHtml(comment.hidden_costs)}</span>` : ""}
+      ${comment.comment ? `<blockquote class="comment-text">${escapeHtml(comment.comment)}</blockquote>` : ""}
+
+      ${(comment.rent_range || comment.hidden_costs) ? `
+      <div class="comment-extra">
+        ${comment.rent_range   ? `<span class="pill">Rent: ${escapeHtml(comment.rent_range)}</span>` : ""}
+        ${comment.hidden_costs ? `<span class="pill">Hidden costs: ${escapeHtml(comment.hidden_costs)}</span>` : ""}
       </div>` : ""}
 
-      <div class="comment-scores">
-        <div class="scores-group">
-          <span class="scores-group-label">Property</span>
-          <div class="scores-grid">${propScores}</div>
-        </div>
-        <div class="scores-group">
-          <span class="scores-group-label">Neighbourhood</span>
-          <div class="scores-grid">${neighScores}</div>
-        </div>
-      </div>
-
-      ${comment.comment ? `<blockquote class="comment-text">${escapeHtml(comment.comment)}</blockquote>` : ""}
+      <details class="ratings-details"${detailsOpen}>
+        <summary>All ratings
+          <svg class="tri" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+        </summary>
+        <p class="scores-group-label">Property</p>
+        <div class="mini-grid">${propRows}</div>
+        <p class="scores-group-label">Neighbourhood</p>
+        <div class="mini-grid">${neighRows}</div>
+      </details>
     </article>
   `;
   }).join("");
 }
 
-function scorePillHtml(field, label, value) {
+function miniRowHtml(field, label, value) {
   if (value === null || value === undefined) return "";
   return `
-    <div class="score-pill" data-value="${value}" data-field="${field}">
-      <span class="score-label">${escapeHtml(label)}</span>
-      <strong class="score-value">${escapeHtml(formatScore(field, value))}</strong>
+    <div class="mini-row">
+      <span class="mini-label">${escapeHtml(label)}</span>
+      <span class="val-pill" data-sentiment="${sentimentForValue(value)}">${escapeHtml(formatScore(field, value))}</span>
     </div>
   `;
 }
@@ -1120,59 +1180,15 @@ function renderReviewForm(propertyId) {
 }
 
 function scale(field, label) {
-  let options = [
-    { label: "Good",  value: "5", variant: "good" },
-    { label: "Fair",  value: "3", variant: "" },
-    { label: "Poor",  value: "1", variant: "poor" },
-  ];
-
-  if (field === "load_shedding") {
-    options = [
-      { label: "Rare",     value: "5", variant: "good" },
-      { label: "Moderate", value: "3", variant: "" },
-      { label: "Frequent", value: "1", variant: "poor" },
-    ];
-  } else if (field === "water_supply") {
-    options = [
-      { label: "Reliable",         value: "5", variant: "good" },
-      { label: "Unreliable",       value: "3", variant: "" },
-      { label: "Tanker dependent", value: "1", variant: "poor" },
-    ];
-  } else if (field === "standby_power") {
-    options = [
-      { label: "Generator", value: "5", variant: "good" },
-      { label: "UPS",       value: "3", variant: "" },
-      { label: "None",      value: "1", variant: "poor" },
-    ];
-  } else if (field === "noise") {
-    options = [
-      { label: "Low",      value: "5", variant: "good" },
-      { label: "Moderate", value: "3", variant: "" },
-      { label: "High",     value: "1", variant: "poor" },
-    ];
-  } else if (field === "security") {
-    options = [
-      { label: "Safe",    value: "5", variant: "good" },
-      { label: "Average", value: "3", variant: "" },
-      { label: "Unsafe",  value: "1", variant: "poor" },
-    ];
-  } else if (field === "elevator") {
-    options = [
-      { label: "Present", value: "5", variant: "good" },
-      { label: "Stairs",  value: "1", variant: "poor" },
-    ];
-  } else if (field === "parking") {
-    options = [
-      { label: "Present", value: "5", variant: "good" },
-      { label: "None",    value: "1", variant: "poor" },
-    ];
-  } else if (field === "flooding") {
-    options = [
-      { label: "None",   value: "5", variant: "good" },
-      { label: "Minor",  value: "3", variant: "" },
-      { label: "Severe", value: "1", variant: "poor" },
-    ];
-  }
+  // Options come from formatScore so the form, the aggregated stats, and the
+  // individual review cards always use the exact same words. Binary fields
+  // (elevator, parking) only offer the two real answers.
+  const values = (field === "elevator" || field === "parking") ? [5, 1] : [5, 3, 1];
+  const options = values.map((value) => ({
+    label:   formatScore(field, value),
+    value:   String(value),
+    variant: sentimentForValue(value),
+  }));
 
   return `
     <div class="scale-control">
