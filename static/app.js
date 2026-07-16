@@ -621,12 +621,17 @@ function shortAddress(property) {
     property.name, property.city, property.area,
     "Sindh", "Punjab", "Khyber Pakhtunkhwa", "Balochistan", "Pakistan",
   ]);
+  const name = String(property.name || "");
   const segments = String(property.address || "")
     .split(",")
     .map((s) => s.trim())
     .filter((s) =>
       s &&
       !DROP.has(s) &&
+      // segment overlaps the display name (renamed properties keep the
+      // geocoder's original name in the address, e.g. "Afshan" inside
+      // "Afshan Apartments")
+      !(name && (name.includes(s) || s.includes(name))) &&
       !/^[A-Z0-9]{4,}\+[A-Z0-9]{2,}$/.test(s) &&   // plus-codes
       !/^\d{4,6}$/.test(s)                          // postcodes
     );
