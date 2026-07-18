@@ -370,7 +370,7 @@ def registered_properties_by_osm(env, force=False):
         rows = supabase_select(
             env, "properties",
             {
-                "select": "id,name,area,city,latitude,longitude,external_osm_id,external_osm_type",
+                "select": "id,name,address,area,city,latitude,longitude,external_place_id,external_osm_id,external_osm_type",
                 "external_osm_id": "not.is.null",
             },
         )
@@ -391,6 +391,76 @@ def registered_properties_by_osm(env, force=False):
 
 def invalidate_registered_cache():
     _registered_cache["ts"] = 0.0
+
+
+def property_to_place(row):
+    """Shape a registered property row like a LocationIQ 'place' for the dropdown."""
+    return {
+        "provider":     "verland",
+        "place_id":     str(row.get("external_place_id") or row.get("id") or ""),
+        "osm_id":       str(row.get("external_osm_id") or ""),
+        "osm_type":     row.get("external_osm_type") or "",
+        "display_name": row.get("address") or row.get("name") or "",
+        "name":         row.get("name") or "",
+        "address":      row.get("address") or "",
+        "area":         row.get("area") or "",
+        "city":         row.get("city") or "",
+        "lat":          row.get("latitude"),
+        "lng":          row.get("longitude"),
+        "registered":   True,
+        "property_id":  str(row.get("id")),
+        "raw":          {},
+    }
+
+
+def curate_places(env, query, places):
+    """Blend registered Verland properties into LocationIQ autocomplete results:
+
+      (a) INJECT properties whose curated name/address/area contain the typed
+          text, so a place is findable by the name WE gave it even when
+          LocationIQ only knows it by its own raw name (e.g. typing "Afshan
+          Apartments" when LocationIQ's node is just "Afshan"); and
+      (b) RENAME any LocationIQ result that is itself a registered property,
+          showing our curated name + address instead of LocationIQ's.
+
+    Deduped on the stable osm id so a place never appears twice. Runs entirely
+    against the in-memory cache -- no per-keystroke DB round-trip. Best-effort:
+    on any failure, returns the original LocationIQ places unchanged.
+    """
+    try:
+        by_osm = registered_properties_by_osm(env)
+        if not by_osm:
+            return places
+        q = (query or "").lower()
+        matched = [
+            row for row in by_osm.values()
+            if q and (
+                q in (row.get("name") or "").lower()
+                or q in (row.get("address") or "").lower()
+                or q in (row.get("area") or "").lower()
+            )
+        ]
+        # Name matches first, then alphabetical -- keeps the most relevant on top.
+        matched.sort(key=lambda r: (q not in (r.get("name") or "").lower(), (r.get("name") or "").lower()))
+        injected_keys = {
+            (row.get("external_osm_type") or "", str(row.get("external_osm_id") or ""))
+            for row in matched
+        }
+        deduped = []
+        for place in places:
+            key = (place.get("osm_type") or "", str(place.get("osm_id") or ""))
+            if key in injected_keys:
+                continue  # already represented by an injected curated entry
+            reg = by_osm.get(key)
+            if reg:
+                place["name"] = reg.get("name") or place.get("name")
+                place["display_name"] = reg.get("address") or place.get("display_name")
+                place["registered"] = True
+                place["property_id"] = str(reg.get("id"))
+            deduped.append(place)
+        return [property_to_place(row) for row in matched] + deduped
+    except Exception:
+        return places
 
 
 # ---------------------------------------------------------------------------
@@ -1287,23 +1357,9 @@ class RequestHandlerMixin:
             )
             return
 
-        # Swap LocationIQ's raw name for our curated one on places already
-        # registered on Verland, matched on the stable OSM id. Best-effort:
-        # curation must never break the search itself.
-        try:
-            by_osm = registered_properties_by_osm(read_env())
-            if by_osm:
-                for place in places:
-                    match = by_osm.get(
-                        (place.get("osm_type") or "", str(place.get("osm_id") or ""))
-                    )
-                    if match:
-                        place["name"] = match.get("name") or place.get("name")
-                        place["registered"] = True
-                        place["property_id"] = str(match.get("id"))
-        except Exception:
-            pass
-
+        # Curate the dropdown with registered Verland properties (inject by
+        # curated name + rename LocationIQ's matches). See curate_places().
+        places = curate_places(read_env(), query, places)
         self.send_json({"places": places})
 
     def handle_location_reverse(self, parsed):
