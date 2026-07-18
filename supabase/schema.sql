@@ -100,6 +100,12 @@ begin
   if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'external_payload') then
     alter table public.properties add column external_payload jsonb;
   end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'external_osm_id') then
+    alter table public.properties add column external_osm_id text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'external_osm_type') then
+    alter table public.properties add column external_osm_type text;
+  end if;
   if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'properties' and column_name = 'map_provider') then
     alter table public.properties add column map_provider text not null default 'locationiq';
   end if;
@@ -147,6 +153,8 @@ create table if not exists public.properties (
   external_provider text not null default 'manual',
   external_place_id text,
   external_display_name text,
+  external_osm_id text,
+  external_osm_type text,
   external_payload jsonb,
   google_place_id text,
   google_place_name text,

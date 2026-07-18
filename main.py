@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import secrets
+import time
 import uuid
 from datetime import date, datetime
 from http import HTTPStatus
@@ -341,6 +342,58 @@ def supabase_rpc(env, fn_name, args, bearer=None):
 
 
 # ---------------------------------------------------------------------------
+# Registered-property curation cache
+#
+# The location autocomplete dropdown is fed live by LocationIQ. For places that
+# are already registered on Verland, we swap LocationIQ's raw name for our own
+# curated `name` -- matched on the STABLE OpenStreetMap id (osm_type, osm_id),
+# never on the name string, which is the mutable field being corrected.
+#
+# The set of registered properties is small, so we keep an in-memory
+# {(osm_type, osm_id) -> property} map refreshed on a short TTL (and on property
+# insert). This keeps the swap a pure dict lookup -- no per-keystroke Supabase
+# round-trip, so autocomplete latency is unchanged.
+# ---------------------------------------------------------------------------
+_registered_cache = {"by_osm": {}, "ts": 0.0}
+_REGISTERED_TTL_SECONDS = 60.0
+
+
+def registered_properties_by_osm(env, force=False):
+    now = time.time()
+    if (
+        not force
+        and _registered_cache["by_osm"]
+        and (now - _registered_cache["ts"]) < _REGISTERED_TTL_SECONDS
+    ):
+        return _registered_cache["by_osm"]
+    try:
+        rows = supabase_select(
+            env, "properties",
+            {
+                "select": "id,name,area,city,latitude,longitude,external_osm_id,external_osm_type",
+                "external_osm_id": "not.is.null",
+            },
+        )
+    except Exception:
+        # On a fetch failure, serve whatever we already have rather than break search.
+        return _registered_cache["by_osm"]
+    by_osm = {}
+    for row in rows or []:
+        osm_id = str(row.get("external_osm_id") or "")
+        if not osm_id:
+            continue
+        osm_type = row.get("external_osm_type") or ""
+        by_osm[(osm_type, osm_id)] = row
+    _registered_cache["by_osm"] = by_osm
+    _registered_cache["ts"] = now
+    return by_osm
+
+
+def invalidate_registered_cache():
+    _registered_cache["ts"] = 0.0
+
+
+# ---------------------------------------------------------------------------
 # Serialisation helpers
 # ---------------------------------------------------------------------------
 def json_value(value):
@@ -419,6 +472,8 @@ def validate_property(payload):
         "external_provider":        clean_text(payload.get("external_provider"), 80) or "manual",
         "external_place_id":        clean_text(payload.get("external_place_id"), 180) or None,
         "external_display_name":    clean_text(payload.get("external_display_name"), 300) or None,
+        "external_osm_id":          clean_text(payload.get("external_osm_id"), 80) or None,
+        "external_osm_type":        clean_text(payload.get("external_osm_type"), 40) or None,
         "google_place_id":          clean_text(payload.get("google_place_id"), 180) or None,
         "google_place_name":        clean_text(payload.get("google_place_name"), 180) or None,
         "google_formatted_address": clean_text(payload.get("google_formatted_address"), 300) or None,
@@ -523,6 +578,8 @@ def parse_locationiq_place(place):
     return {
         "provider":      "locationiq",
         "place_id":      str(place.get("place_id") or place.get("osm_id") or ""),
+        "osm_id":        str(place.get("osm_id") or ""),
+        "osm_type":      place.get("osm_type") or "",
         "display_name":  display_name,
         "name":          name,
         "address":       display_name,
@@ -1229,6 +1286,24 @@ class RequestHandlerMixin:
                 f"Location search failed: {exc}", HTTPStatus.BAD_GATEWAY
             )
             return
+
+        # Swap LocationIQ's raw name for our curated one on places already
+        # registered on Verland, matched on the stable OSM id. Best-effort:
+        # curation must never break the search itself.
+        try:
+            by_osm = registered_properties_by_osm(read_env())
+            if by_osm:
+                for place in places:
+                    match = by_osm.get(
+                        (place.get("osm_type") or "", str(place.get("osm_id") or ""))
+                    )
+                    if match:
+                        place["name"] = match.get("name") or place.get("name")
+                        place["registered"] = True
+                        place["property_id"] = str(match.get("id"))
+        except Exception:
+            pass
+
         self.send_json({"places": places})
 
     def handle_location_reverse(self, parsed):
@@ -1412,6 +1487,7 @@ class RequestHandlerMixin:
             print(f"!! Supabase ERROR in create_property: {e}")
             self.send_error_json("Failed to create property in database.")
             return
+        invalidate_registered_cache()
 
         self.send_json(
             {"property": property_summary(env, created, bearer=access_token)},
@@ -1496,6 +1572,8 @@ class RequestHandlerMixin:
                         "external_provider":     place.get("provider", "locationiq"),
                         "external_place_id":     str(place.get("place_id", "")),
                         "external_display_name": place.get("display_name"),
+                        "external_osm_id":       (str((place.get("raw") or {}).get("osm_id") or place.get("osm_id") or "") or None),
+                        "external_osm_type":     ((place.get("raw") or {}).get("osm_type") or place.get("osm_type") or None),
                         "map_provider":          "locationiq",
                         "external_payload":      place.get("raw") or {},
                         "created_by":            user_id,
@@ -1504,6 +1582,7 @@ class RequestHandlerMixin:
                         env, "properties", new_property, bearer=access_token
                     )
                     property_id  = str(property_row.get("id"))
+                    invalidate_registered_cache()
             else:
                 matches = supabase_select(
                     env, "properties", {"id": f"eq.{property_id}", "limit": "1"},
