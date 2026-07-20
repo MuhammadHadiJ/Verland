@@ -447,7 +447,11 @@ function renderHeaderAuth() {
   const slot = document.querySelector("#headerAuth");
   if (slot) {
     if (state.user) {
+      const adminLink = state.user.is_admin
+        ? `<a class="text-button" href="/admin">Admin</a>`
+        : "";
       slot.innerHTML = `
+        ${adminLink}
         ${avatarHtml(state.user, "user-avatar")}
         <button class="text-button" id="headerSignOut">Sign out</button>
       `;

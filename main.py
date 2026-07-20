@@ -237,6 +237,55 @@ def read_env():
     return values
 
 
+# ---------------------------------------------------------------------------
+# Admin allowlist
+#
+# Admin access is gated by a simple env allowlist -- set ADMIN_EMAILS (comma-
+# separated) in .env locally or as an env var in prod. The signed-in Google
+# account's email is checked against it. No schema, no roles table: at this
+# scale there's exactly one admin.
+# ---------------------------------------------------------------------------
+def admin_emails(env):
+    raw = env.get("ADMIN_EMAILS") or ""
+    return {e.strip().lower() for e in raw.replace(";", ",").split(",") if e.strip()}
+
+
+def is_admin_email(email, env):
+    return bool(email) and email.strip().lower() in admin_emails(env)
+
+
+# Minimal placeholder served at /admin once the moderation/verification tools
+# are ready to live behind this gate. For now it just confirms the gate works.
+ADMIN_PLACEHOLDER_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Verland · Admin</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+           font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+           background:#0f2e22; color:#f4f1ea; text-align:center; padding:24px; }
+    .card { max-width:440px; }
+    .badge { display:inline-block; padding:6px 14px; border-radius:999px; background:#1f7a4d;
+             color:#fff; font-weight:600; font-size:13px; letter-spacing:.06em; }
+    h1 { font-size:2rem; margin:18px 0 10px; }
+    p { opacity:.82; line-height:1.55; margin:.4em 0; }
+    a { color:#7fd1a3; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <span class="badge">ADMIN</span>
+    <h1>You're a mod!</h1>
+    <p>This is the admin gate. Moderation &amp; verification tools will live here.</p>
+    <p><a href="/">&larr; Back to Verland</a></p>
+  </div>
+</body>
+</html>"""
+
+
 def supabase_url(env):
     project_ref = env.get("SUPABASE_PROJECT_REF") or env.get("Project_Ref")
     return env.get("SUPABASE_URL") or (
@@ -1046,6 +1095,24 @@ class RequestHandlerMixin:
     def send_error_json(self, message, status=HTTPStatus.BAD_REQUEST):
         self.send_json({"error": message}, status)
 
+    def send_html(self, html, status=HTTPStatus.OK):
+        encoded = html.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        for cookie in getattr(self, "_pending_set_cookies", []):
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def send_redirect(self, location, status=HTTPStatus.FOUND):
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        for cookie in getattr(self, "_pending_set_cookies", []):
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+
     # ------------------------------------------------------------------
     # Routing
     # ------------------------------------------------------------------
@@ -1083,6 +1150,9 @@ class RequestHandlerMixin:
         if path.startswith("/api/properties/"):
             property_id = path.split("/")[-1]
             self.handle_get_property(property_id)
+            return
+        if path == "/admin":
+            self.handle_admin_page()
             return
 
         self.serve_static()
@@ -1261,6 +1331,7 @@ class RequestHandlerMixin:
             ),
             "provider":   user.get("app_metadata", {}).get("provider", "google"),
             "avatar_url": meta.get("avatar_url") or meta.get("picture") or None,
+            "is_admin":   is_admin_email(user.get("email"), read_env()),
         })
 
     def handle_auth_signout(self):
@@ -1272,6 +1343,15 @@ class RequestHandlerMixin:
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(b'{"ok":true}')
+
+    def handle_admin_page(self):
+        """Admin gate: serve the moderator page only to allowlisted emails."""
+        user = self._resolve_session()
+        email = user.get("email") if user else None
+        if not is_admin_email(email, read_env()):
+            self.send_redirect("/")
+            return
+        self.send_html(ADMIN_PLACEHOLDER_HTML)
 
     def _get_authenticated_user_id(self):
         """
