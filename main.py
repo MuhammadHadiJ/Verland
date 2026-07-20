@@ -432,6 +432,13 @@ def get_supabase_anon_key(env):
     return env.get(SUPABASE_ANON_KEY_ENV) or env.get("ANON_KEY") or ""
 
 
+def _is_jwt(token):
+    """A JWT has three dot-separated parts. Legacy anon/service_role keys are
+    JWTs; the newer sb_publishable_/sb_secret_ keys are not, and must be sent on
+    the apikey header only (never as an Authorization: Bearer JWT)."""
+    return bool(token) and token.count(".") == 2
+
+
 class SupabaseError(Exception):
     def __init__(self, status, message):
         super().__init__(message)
@@ -444,11 +451,25 @@ def _supabase_request(env, method, path, *, params=None, body=None, bearer=None,
         raise SupabaseError(503, "Supabase URL not configured")
     query = f"?{urlencode(params)}" if params else ""
     url = f"{base}{path}{query}"
-    headers = {
-        "apikey":        get_supabase_anon_key(env),
-        "Authorization": f"Bearer {bearer or get_supabase_anon_key(env)}",
-        "Content-Type":  "application/json",
-    }
+    # Supabase keys come in two shapes. Legacy anon/service_role keys are JWTs
+    # and go in Authorization: Bearer. The newer sb_publishable_/sb_secret_ keys
+    # are NOT JWTs and must go in the apikey header ONLY -- putting one in
+    # Authorization makes PostgREST try to JWT-decode it and reject the request
+    # ("Expected 3 parts in JWT; got 1").
+    anon = get_supabase_anon_key(env)
+    headers = {"Content-Type": "application/json"}
+    if bearer and not _is_jwt(bearer):
+        # New-format key (e.g. a sb_secret_ service key): apikey only.
+        headers["apikey"] = bearer
+    elif bearer:
+        # A JWT: a user session token, or a legacy service_role key.
+        headers["apikey"] = anon or bearer
+        headers["Authorization"] = f"Bearer {bearer}"
+    else:
+        # No caller key -> default project (anon/publishable) access.
+        headers["apikey"] = anon
+        if _is_jwt(anon):
+            headers["Authorization"] = f"Bearer {anon}"
     if prefer:
         headers["Prefer"] = prefer
     data = json.dumps(body).encode() if body is not None else None
