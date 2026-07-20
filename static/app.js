@@ -465,7 +465,11 @@ function renderHeaderAuth() {
   const heroSlot = document.querySelector("#heroAuth");
   if (heroSlot) {
     if (state.user) {
+      const heroAdminLink = state.user.is_admin
+        ? `<a class="hero-signout" href="/admin">Admin</a>`
+        : "";
       heroSlot.innerHTML = `
+        ${heroAdminLink}
         ${avatarHtml(state.user, "hero-avatar")}
         <button class="hero-signout" id="heroSignOut">Sign out</button>
       `;

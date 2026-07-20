@@ -458,13 +458,12 @@ begin
     with check (created_by = auth.uid());
   end if;
 
-  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'properties' and policyname = 'Property creators can update their properties') then
-    create policy "Property creators can update their properties"
-    on public.properties for update
-    to authenticated
-    using (created_by = auth.uid())
-    with check (created_by = auth.uid());
-  end if;
+  -- Properties are canonical/shared data: a regular user may CREATE one (when
+  -- reviewing a new location) but must NOT edit an existing property's name or
+  -- address. Property editing is admin-only via the service role (bypasses
+  -- RLS), so there is deliberately no user UPDATE policy. Drop the old
+  -- creator-based one if an earlier schema created it.
+  drop policy if exists "Property creators can update their properties" on public.properties;
 
   if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'property_claims' and policyname = 'Users can read their own property claims') then
     create policy "Users can read their own property claims"

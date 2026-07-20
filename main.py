@@ -254,34 +254,129 @@ def is_admin_email(email, env):
     return bool(email) and email.strip().lower() in admin_emails(env)
 
 
-# Minimal placeholder served at /admin once the moderation/verification tools
-# are ready to live behind this gate. For now it just confirms the gate works.
-ADMIN_PLACEHOLDER_HTML = """<!doctype html>
+def service_role_key(env):
+    """Supabase service-role key, if configured. Used ONLY server-side inside
+    admin-gated endpoints (it bypasses RLS), never sent to the client. When
+    unset, admin writes fall back to the admin's own session token, which RLS
+    still limits to rows they created."""
+    return env.get("SUPABASE_SERVICE_ROLE_KEY") or env.get("SERVICE_ROLE_KEY") or ""
+
+
+# Functional admin page served at /admin (server-gated to allowlisted emails).
+# Talks to the admin-only /api/admin/properties endpoints via same-origin fetch.
+ADMIN_PAGE_HTML = """<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Verland · Admin</title>
-  <style>
-    :root { color-scheme: light dark; }
-    body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-           font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-           background:#0f2e22; color:#f4f1ea; text-align:center; padding:24px; }
-    .card { max-width:440px; }
-    .badge { display:inline-block; padding:6px 14px; border-radius:999px; background:#1f7a4d;
-             color:#fff; font-weight:600; font-size:13px; letter-spacing:.06em; }
-    h1 { font-size:2rem; margin:18px 0 10px; }
-    p { opacity:.82; line-height:1.55; margin:.4em 0; }
-    a { color:#7fd1a3; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verland · Admin</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         background:#0f2e22; color:#f4f1ea; padding:24px; }
+  a { color:#7fd1a3; }
+  h1 { margin:0 0 4px; font-size:1.6rem; }
+  .sub { opacity:.7; margin:0 0 24px; font-size:.9rem; }
+  .card { background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1);
+          border-radius:12px; padding:16px; margin-bottom:16px; max-width:760px; }
+  h2 { font-size:1rem; margin:0 0 12px; letter-spacing:.02em; }
+  label { display:block; font-size:.72rem; text-transform:uppercase; letter-spacing:.05em;
+          opacity:.6; margin:8px 0 3px; }
+  input { width:100%; padding:8px 10px; border-radius:8px; border:1px solid rgba(255,255,255,.15);
+          background:rgba(0,0,0,.25); color:#f4f1ea; font-size:.95rem; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  button { margin-top:12px; padding:8px 16px; border:0; border-radius:999px; cursor:pointer;
+           background:#1f7a4d; color:#fff; font-weight:600; font-size:.9rem; }
+  button.ghost { background:transparent; border:1px solid rgba(255,255,255,.25); color:#f4f1ea; }
+  .msg { font-size:.85rem; margin-top:8px; min-height:1.1em; }
+  .ok { color:#7fd1a3; } .err { color:#ff9b8a; }
+  .prop-name { font-weight:600; margin-bottom:6px; }
+</style>
 </head>
 <body>
+  <h1>Verland Admin</h1>
+  <p class="sub">You're a mod. Edit a property's name &amp; address, or add an empty one. <a href="/">&larr; Back to site</a></p>
+
   <div class="card">
-    <span class="badge">ADMIN</span>
-    <h1>You're a mod!</h1>
-    <p>This is the admin gate. Moderation &amp; verification tools will live here.</p>
-    <p><a href="/">&larr; Back to Verland</a></p>
+    <h2>Add a property</h2>
+    <label>Name</label>
+    <input id="new-name" placeholder="e.g. Al Asr Home">
+    <div class="row">
+      <div><label>Address</label><input id="new-address" placeholder="e.g. PECHS Block 3, Karachi"></div>
+      <div><label>City</label><input id="new-city" value="Karachi"></div>
+    </div>
+    <button id="create-btn">Create empty property</button>
+    <div class="msg" id="create-msg"></div>
   </div>
+
+  <div id="list"></div>
+
+<script>
+const api = (url, opts={}) => fetch(url, {credentials:"same-origin", headers:{"Content-Type":"application/json"}, ...opts}).then(async r => {
+  const data = await r.json().catch(()=>({}));
+  if (!r.ok) throw new Error(data.error || ("HTTP "+r.status));
+  return data;
+});
+const esc = s => (s==null ? "" : String(s).replace(/"/g,"&quot;"));
+
+async function load() {
+  const list = document.getElementById("list");
+  try {
+    const {properties} = await api("/api/admin/properties");
+    if (!properties.length) { list.innerHTML = '<p class="sub">No properties yet.</p>'; return; }
+    list.innerHTML = properties.map(p => `
+      <div class="card" data-id="${esc(p.id)}">
+        <div class="prop-name">${esc(p.name)}</div>
+        <div class="row">
+          <div><label>Name</label><input data-f="name" value="${esc(p.name)}"></div>
+          <div><label>City</label><input data-f="city" value="${esc(p.city)}"></div>
+        </div>
+        <div class="row">
+          <div><label>Address</label><input data-f="address" value="${esc(p.address)}"></div>
+          <div><label>Area</label><input data-f="area" value="${esc(p.area)}"></div>
+        </div>
+        <button class="ghost save-btn">Save</button>
+        <span class="msg"></span>
+      </div>`).join("");
+    list.querySelectorAll(".card").forEach(card => {
+      card.querySelector(".save-btn").addEventListener("click", () => save(card));
+    });
+  } catch(e) { list.innerHTML = '<p class="msg err">'+esc(e.message)+'</p>'; }
+}
+
+async function save(card) {
+  const id = card.dataset.id;
+  const body = {};
+  card.querySelectorAll("input[data-f]").forEach(i => body[i.dataset.f] = i.value.trim());
+  const msg = card.querySelector(".msg");
+  msg.textContent = "Saving…"; msg.className = "msg";
+  try {
+    await api("/api/admin/properties/"+id, {method:"POST", body:JSON.stringify(body)});
+    msg.textContent = "Saved."; msg.className = "msg ok";
+  } catch(e) { msg.textContent = e.message; msg.className = "msg err"; }
+}
+
+document.getElementById("create-btn").addEventListener("click", async () => {
+  const msg = document.getElementById("create-msg");
+  const body = {
+    name: document.getElementById("new-name").value.trim(),
+    address: document.getElementById("new-address").value.trim(),
+    city: document.getElementById("new-city").value.trim() || "Karachi",
+  };
+  if (!body.name) { msg.textContent="Name is required."; msg.className="msg err"; return; }
+  msg.textContent = "Creating…"; msg.className = "msg";
+  try {
+    await api("/api/admin/properties", {method:"POST", body:JSON.stringify(body)});
+    msg.textContent = "Created."; msg.className = "msg ok";
+    document.getElementById("new-name").value = "";
+    document.getElementById("new-address").value = "";
+    load();
+  } catch(e) { msg.textContent = e.message; msg.className = "msg err"; }
+});
+
+load();
+</script>
 </body>
 </html>"""
 
@@ -388,6 +483,13 @@ def supabase_delete(env, table, params, bearer=None):
 
 def supabase_rpc(env, fn_name, args, bearer=None):
     return _supabase_request(env, "POST", f"/rest/v1/rpc/{fn_name}", body=args, bearer=bearer) or []
+
+
+def supabase_update(env, table, params, fields, bearer=None):
+    return _supabase_request(
+        env, "PATCH", f"/rest/v1/{table}", params=params, body=fields, bearer=bearer,
+        prefer="return=representation",
+    ) or []
 
 
 # ---------------------------------------------------------------------------
@@ -1147,6 +1249,9 @@ class RequestHandlerMixin:
         if path == "/api/neighbourhood-preview":
             self.handle_neighbourhood_preview(parsed)
             return
+        if path == "/api/admin/properties":
+            self.handle_admin_list_properties()
+            return
         if path.startswith("/api/properties/"):
             property_id = path.split("/")[-1]
             self.handle_get_property(property_id)
@@ -1161,6 +1266,12 @@ class RequestHandlerMixin:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
+        if path == "/api/admin/properties":
+            self.handle_admin_create_property()
+            return
+        if path.startswith("/api/admin/properties/"):
+            self.handle_admin_update_property(path.split("/")[-1])
+            return
         if path == "/api/properties/new/reviews":
             self.handle_create_review(None)
             return
@@ -1351,7 +1462,138 @@ class RequestHandlerMixin:
         if not is_admin_email(email, read_env()):
             self.send_redirect("/")
             return
-        self.send_html(ADMIN_PLACEHOLDER_HTML)
+        self.send_html(ADMIN_PAGE_HTML)
+
+    def _require_admin(self):
+        """Return the signed-in admin user dict, or send 403 and return None."""
+        user = self._resolve_session()
+        email = user.get("email") if user else None
+        if not is_admin_email(email, read_env()):
+            self.send_error_json("Admin access required.", HTTPStatus.FORBIDDEN)
+            return None
+        return user
+
+    def handle_admin_list_properties(self):
+        if not self._require_admin():
+            return
+        env = read_env()
+        try:
+            rows = supabase_select(env, "properties", {
+                "select": "id,name,address,area,city,external_osm_id",
+                "order":  "created_at.desc",
+            })
+        except Exception as exc:
+            self.send_error_json(f"Failed to load properties: {exc}", HTTPStatus.BAD_GATEWAY)
+            return
+        self.send_json({"properties": rows or []})
+
+    def handle_admin_update_property(self, property_id):
+        if not self._require_admin():
+            return
+        try:
+            property_id = str(uuid.UUID(property_id))
+        except (ValueError, AttributeError):
+            self.send_error_json("Invalid property ID")
+            return
+        body = parse_body(self)
+        fields = {}
+        for key, limit in (("name", 160), ("address", 300), ("area", 120), ("city", 120)):
+            if key in body:
+                value = clean_text(body.get(key), limit)
+                if key == "name" and not value:
+                    self.send_error_json("Name cannot be empty")
+                    return
+                fields[key] = value
+        if not fields:
+            self.send_error_json("Nothing to update")
+            return
+        env = read_env()
+        access_token, _ = parse_session_cookie(self)
+        bearer = service_role_key(env) or access_token
+        try:
+            updated = supabase_update(
+                env, "properties", {"id": f"eq.{property_id}"}, fields, bearer=bearer
+            )
+        except Exception as exc:
+            self.send_error_json(f"Update failed: {exc}", HTTPStatus.BAD_GATEWAY)
+            return
+        if not updated:
+            # With the user UPDATE policy removed, an edit that touches 0 rows
+            # means RLS blocked it -- i.e. no service role key -- (or a bad id).
+            self.send_error_json(
+                "Edit didn't apply. Property editing is admin-only via the service "
+                "role — set SUPABASE_SERVICE_ROLE_KEY (or the property id was not found).",
+                HTTPStatus.FORBIDDEN,
+            )
+            return
+        invalidate_registered_cache()
+        self.send_json({"property": updated[0]})
+
+    def handle_admin_create_property(self):
+        user = self._require_admin()
+        if not user:
+            return
+        body = parse_body(self)
+        name = clean_text(body.get("name"), 160)
+        address = clean_text(body.get("address"), 300)
+        city = clean_text(body.get("city"), 120) or "Karachi"
+        if not name:
+            self.send_error_json("Name is required")
+            return
+        env = read_env()
+        # Best-effort geocode so the property gets real coordinates + an osm id
+        # (which makes it findable in autocomplete). Fall back to city centre.
+        lat = lng = None
+        area = ""
+        osm_id = osm_type = place_id = ""
+        provider = "manual"
+        payload = {}
+        try:
+            prox = CITY_COORDS.get(city.lower()) or DEFAULT_PROXIMITY
+            results = locationiq_search(address or name, proximity=prox)
+            if results:
+                r = results[0]
+                rlat, rlng = float(r["lat"]), float(r["lng"])
+                if 23.0 <= rlat <= 38.0 and 60.0 <= rlng <= 78.0:
+                    lat, lng = rlat, rlng
+                    area = r.get("area") or ""
+                    raw = r.get("raw") or {}
+                    osm_id = str(raw.get("osm_id") or "")
+                    osm_type = raw.get("osm_type") or ""
+                    place_id = str(r.get("place_id") or "")
+                    provider = "locationiq"
+                    payload = raw
+        except Exception:
+            pass
+        if lat is None or lng is None:
+            lat, lng = CITY_COORDS.get(city.lower()) or DEFAULT_PROXIMITY
+        row = {
+            "name":                  name,
+            "property_type":         guess_property_type(city),
+            "address":               address or name,
+            "area":                  area or city,
+            "city":                  city,
+            "country":               "Pakistan",
+            "latitude":              lat,
+            "longitude":             lng,
+            "external_provider":     provider,
+            "external_place_id":     place_id or None,
+            "external_display_name": address or name,
+            "external_osm_id":       osm_id or None,
+            "external_osm_type":     osm_type or None,
+            "map_provider":          "locationiq",
+            "external_payload":      payload,
+            "created_by":            user.get("id"),
+        }
+        access_token, _ = parse_session_cookie(self)
+        bearer = service_role_key(env) or access_token
+        try:
+            created = supabase_insert(env, "properties", row, bearer=bearer)
+        except Exception as exc:
+            self.send_error_json(f"Create failed: {exc}", HTTPStatus.BAD_GATEWAY)
+            return
+        invalidate_registered_cache()
+        self.send_json({"property": created}, HTTPStatus.CREATED)
 
     def _get_authenticated_user_id(self):
         """
