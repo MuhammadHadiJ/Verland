@@ -1678,6 +1678,11 @@ dialog::backdrop {
   .comment-who { flex-basis: calc(100% - 50px); }
   .comment-header { row-gap: 8px; }
 
+  /* Keep the verified badge tidy next to the name on narrow screens */
+  .comment-name-line { min-width: 0; }
+  .comment-name-line .comment-reviewer { min-width: 0; overflow-wrap: anywhere; }
+  .verified-badge { font-size: 0.66rem; padding: 3px 8px 3px 5px; gap: 4px; }
+
   .agg .val-pill { min-width: 0; }
 }
 
