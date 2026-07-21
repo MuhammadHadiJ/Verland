@@ -505,6 +505,12 @@ def public_base_url(env):
     return (env.get("PUBLIC_BASE_URL") or "http://localhost:8000").rstrip("/")
 
 
+# How long the session cookies persist. Without a Max-Age they are "session
+# cookies" that the browser deletes on close, forcing a fresh login every visit;
+# 30 days lets the refresh-token flow keep the user signed in across visits.
+SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
+
+
 def cookie_secure_suffix(env):
     """`; Secure` once served over HTTPS, nothing on plain local HTTP (browsers
     silently drop Secure cookies set over an insecure origin)."""
@@ -1166,6 +1172,7 @@ def property_summary(env, property_row, reviews_by_id=None, nearby_reviews_by_id
             "rent_range":       r.get("rent_range"),
             "hidden_costs":     r.get("hidden_costs"),
             "comment":          r.get("comment"),
+            "verified_at":      json_value(r.get("verified_at")),
             "created_at":       json_value(r.get("created_at") or datetime.now()),
             "scores": {
                 api_field: r.get(db_col)
@@ -1612,12 +1619,12 @@ class RequestHandlerMixin:
         if access_token:
             self.send_header(
                 "Set-Cookie",
-                f"sb_access_token={access_token}; Path=/; HttpOnly; SameSite=Lax{secure}"
+                f"sb_access_token={access_token}; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax{secure}"
             )
         if refresh_token:
             self.send_header(
                 "Set-Cookie",
-                f"sb_refresh_token={refresh_token}; Path=/; HttpOnly; SameSite=Lax{secure}"
+                f"sb_refresh_token={refresh_token}; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax{secure}"
             )
         self.send_header("Set-Cookie", f"sb_pkce_verifier=; Path=/; Max-Age=0; HttpOnly{secure}")
         self.end_headers()
@@ -1923,8 +1930,8 @@ class RequestHandlerMixin:
         new_refresh = session.get("refresh_token", refresh_token)
         secure = cookie_secure_suffix(env)
         self._pending_set_cookies = [
-            f"sb_access_token={new_access}; Path=/; HttpOnly; SameSite=Lax{secure}",
-            f"sb_refresh_token={new_refresh}; Path=/; HttpOnly; SameSite=Lax{secure}",
+            f"sb_access_token={new_access}; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax{secure}",
+            f"sb_refresh_token={new_refresh}; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax{secure}",
         ]
         return user
 

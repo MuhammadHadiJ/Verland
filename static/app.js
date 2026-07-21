@@ -153,33 +153,8 @@ window.addEventListener("popstate", () => {
   renderFromUrl();
 });
 
-// ---------------------------------------------------------------------------
-// Theme toggle
-// ---------------------------------------------------------------------------
-const THEME_ICONS = {
-  light:  '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>',
-  dark:   '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
-  system: '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>',
-};
-const THEME_CYCLE = { system: "dark", dark: "light", light: "system" };
-
-function updateThemeButton() {
-  const pref = document.documentElement.getAttribute("data-theme-pref") || "system";
-  document.querySelector("#themeIcon").innerHTML = THEME_ICONS[pref];
-  document.querySelector("#themeLabel").textContent = pref.charAt(0).toUpperCase() + pref.slice(1);
-}
-
-document.querySelector("#themeToggle").addEventListener("click", () => {
-  const current = document.documentElement.getAttribute("data-theme-pref") || "system";
-  const next    = THEME_CYCLE[current];
-  const isDark  = next === "dark" || (next === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
-  document.documentElement.setAttribute("data-theme", isDark ? "dark" : "light");
-  document.documentElement.setAttribute("data-theme-pref", next);
-  localStorage.setItem("theme", next);
-  updateThemeButton();
-});
-
-updateThemeButton();
+// Theme follows the OS (prefers-color-scheme) only — applied by the boot script
+// in index.html, which also keeps it live on system change. No in-app toggle.
 
 // ---------------------------------------------------------------------------
 // Dialog handlers
@@ -929,6 +904,9 @@ function renderComments(property) {
 
   const TRASH = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>`;
 
+  // Blue award-ribbon badge for reviews verified via a utility bill.
+  const VERIFIED_BADGE = `<span class="verified-badge" title="Residency verified via utility bill"><svg viewBox="0 0 24 26" width="15" height="16" aria-hidden="true"><path d="M9 15 L7 25 L10.5 22.5 L12 25.5 L13.5 22.5 L17 25 L15 15 Z" fill="#1e40af"/><circle cx="12" cy="9" r="8" fill="#2563eb"/><circle cx="12" cy="9" r="5.4" fill="none" stroke="#93c5fd" stroke-width="1"/><path d="M8.8 9.1 l2.2 2.2 l4-4.2" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>Verified resident</span>`;
+
   // Full ratings start expanded where there's room, collapsed on phones
   const detailsOpen = window.matchMedia("(min-width: 721px)").matches ? " open" : "";
 
@@ -945,6 +923,7 @@ function renderComments(property) {
         <div class="comment-who">
           <strong class="comment-reviewer">${escapeHtml(comment.reviewer_name)}</strong>
           ${comment.lived_period ? `<span class="comment-sub">Lived here ${escapeHtml(comment.lived_period)}</span>` : ""}
+          ${comment.verified_at ? VERIFIED_BADGE : ""}
         </div>
         <span class="comment-role-badge"${isResident ? "" : ` data-tone="neutral"`}>${escapeHtml(comment.contributor_role)}</span>
         <div class="comment-meta-right">
@@ -1054,6 +1033,19 @@ function openReviewPopup(propertyId) {
   const periodMark  = form.querySelector("#periodRequiredMark");
 
   const verifySection = form.querySelector("#verifySection");
+  const billInput = form.querySelector("#billInput");
+  const billChip  = form.querySelector("#billFileChip");
+  const billName  = form.querySelector("#billFileName");
+  function refreshBillChip() {
+    const f = billInput?.files?.[0];
+    if (f) { billName.textContent = f.name; billChip.classList.add("show"); }
+    else if (billChip) { billChip.classList.remove("show"); }
+  }
+  billInput?.addEventListener("change", refreshBillChip);
+  form.querySelector("#billRemove")?.addEventListener("click", () => {
+    billInput.value = ""; refreshBillChip();
+  });
+
   roleSelect.addEventListener("change", () => {
     const requires = PERIOD_REQUIRED_ROLES.has(roleSelect.value);
     periodInput.required    = requires;
@@ -1063,7 +1055,7 @@ function openReviewPopup(propertyId) {
     if (verifySection) {
       const eligible = /resident|owner|landlord/i.test(roleSelect.value);
       verifySection.hidden = !eligible;
-      if (!eligible) form.querySelector("#billInput").value = "";
+      if (!eligible) { billInput.value = ""; refreshBillChip(); }
     }
   });
 
@@ -1220,9 +1212,16 @@ function renderReviewForm(propertyId) {
       </label>
 
       <div class="review-section" id="verifySection" hidden>
-        <h4>Verify your residency <span style="opacity:.55;font-weight:400;font-size:.85em">optional</span></h4>
-        <p style="margin:.2em 0 .6em;opacity:.75;font-size:.85rem">Upload a utility bill showing your name at this address to earn a "Verified resident" badge. Private — only the moderator sees it, and it's deleted after review.</p>
-        <input type="file" name="bill" id="billInput" accept="image/jpeg,image/png,image/webp,application/pdf">
+        <h4>Verify residency — optional</h4>
+        <p class="verify-note">Upload a utility bill showing your name at this address to earn a "Verified resident" badge. It's private — only the moderator sees it, and it's deleted after review.</p>
+        <div class="verify-upload">
+          <label class="verify-choose" for="billInput">📎 Attach utility bill</label>
+          <input type="file" name="bill" id="billInput" accept="image/jpeg,image/png,image/webp,application/pdf">
+          <span class="verify-file" id="billFileChip">
+            <span class="name" id="billFileName"></span>
+            <button type="button" class="verify-remove" id="billRemove" aria-label="Remove file">✕</button>
+          </span>
+        </div>
       </div>
 
       <p class="form-error"></p>

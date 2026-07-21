@@ -11,10 +11,14 @@
     <link rel="stylesheet" href="/styles.css">
     <script>
       (function () {
-        var pref = localStorage.getItem("theme") || "system";
-        var dark = pref === "dark" || (pref === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
-        document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
-        document.documentElement.setAttribute("data-theme-pref", pref);
+        // Theme follows the OS setting only (no manual toggle). Set before the
+        // body parses to avoid a flash, and kept live if the OS theme changes.
+        var _mq = matchMedia("(prefers-color-scheme: dark)");
+        var _applyTheme = function () {
+          document.documentElement.setAttribute("data-theme", _mq.matches ? "dark" : "light");
+        };
+        _applyTheme();
+        _mq.addEventListener("change", _applyTheme);
 
         // Landing directly on a non-hero route (deep link / refresh, or the
         // post-sign-in OAuth redirect restoring a pre-auth search) must not
@@ -86,10 +90,6 @@
 
         <div class="header-right">
           <div id="headerAuth" class="header-auth"></div>
-          <button class="theme-btn" id="themeToggle" type="button" aria-label="Toggle theme">
-            <svg id="themeIcon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
-            <span id="themeLabel"></span>
-          </button>
         </div>
       </header>
 

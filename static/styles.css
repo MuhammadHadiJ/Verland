@@ -1074,6 +1074,46 @@ input:focus, select:focus, textarea:focus {
 .wide { grid-column: 1 / -1; }
 .form-error { min-height: 18px; color: var(--red); font-size: 0.82rem; font-weight: 700; }
 
+/* Verify-residency uploader (in the review form) */
+.verify-note { font-size: 0.82rem; color: var(--muted); line-height: 1.45; margin-bottom: 12px; }
+.verify-upload { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.verify-upload input[type="file"] { display: none; }
+.verify-choose {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 9px 16px; border-radius: 999px; cursor: pointer;
+  background: var(--panel); color: var(--ink);
+  border: 1.5px solid var(--border-2); font-size: 0.85rem; font-weight: 600;
+  transition: border-color 0.15s, background 0.15s;
+}
+.verify-choose:hover { border-color: var(--brand); }
+.verify-file {
+  display: none; align-items: center; gap: 8px;
+  font-size: 0.83rem; color: var(--ink-2); font-weight: 600;
+  background: var(--surface-2); border-radius: 999px; padding: 6px 6px 6px 14px;
+}
+.verify-file.show { display: inline-flex; }
+.verify-file .name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.verify-remove {
+  border: 0; background: var(--neutral-bg); color: var(--muted);
+  width: 22px; height: 22px; border-radius: 999px; cursor: pointer;
+  font-size: 0.82rem; line-height: 1; display: grid; place-items: center;
+  transition: background 0.15s, color 0.15s;
+}
+.verify-remove:hover { background: var(--poor-bg); color: var(--poor); }
+
+/* Verified-resident award badge (blue, on review cards) */
+.verified-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 4px; width: fit-content;
+  font-size: 0.7rem; font-weight: 800; letter-spacing: 0.01em; line-height: 1;
+  color: #1d4ed8; background: #e8f0fe; border: 1px solid #c9dcfb;
+  padding: 3px 9px 3px 6px; border-radius: 999px;
+}
+.verified-badge svg { flex: none; }
+html[data-theme="dark"] .verified-badge {
+  color: #bcd4fb; background: rgba(37,99,235,0.16); border-color: rgba(37,99,235,0.42);
+}
+
 /* ================================================================
    DIALOG
    ================================================================ */
