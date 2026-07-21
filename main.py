@@ -7,7 +7,7 @@ import os
 import secrets
 import time
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -342,10 +342,11 @@ ADMIN_PAGE_HTML = """<!doctype html>
   </section>
 
   <section class="panel" id="panel-verified">
-    <div class="card">
-      <h2>Verified users</h2>
-      <p class="empty">Coming next — this is where you'll review utility-bill submissions and approve "Verified resident" badges.</p>
+    <div class="toolbar">
+      <span class="sub" style="margin:0;">Pending utility-bill submissions</span>
+      <button class="btn ghost" id="refresh-ver">Refresh</button>
     </div>
+    <div id="ver-list"></div>
   </section>
 
 <script>
@@ -356,10 +357,11 @@ const api = (url, opts={}) => fetch(url, {credentials:"same-origin", headers:{"C
 });
 const esc = s => (s==null ? "" : String(s).replace(/"/g,"&quot;"));
 
-// Tab switching
+// Tab switching (lazy-load verifications the first time that tab opens)
 document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
   document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x === t));
   document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === "panel-" + t.dataset.tab));
+  if (t.dataset.tab === "verified") loadVerifications();
 }));
 
 // Reveal / hide the add-property form
@@ -442,6 +444,44 @@ document.getElementById("create-btn").addEventListener("click", async () => {
   } catch(e) { msg.textContent = e.message; msg.className = "msg err"; }
 });
 
+async function loadVerifications() {
+  const list = document.getElementById("ver-list");
+  list.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const {verifications} = await api("/api/admin/verifications");
+    if (!verifications.length) { list.innerHTML = '<p class="empty">No pending submissions.</p>'; return; }
+    list.innerHTML = verifications.map(v => `
+      <div class="card" data-id="${esc(v.id)}">
+        <div class="prop-name">${esc(v.property_name || "Unknown property")}</div>
+        <p class="empty">${esc(v.property_area || "")} · ${esc((v.created_at || "").slice(0,10))}</p>
+        ${v.note ? '<p>' + esc(v.note) + '</p>' : ''}
+        ${v.bill_url
+          ? '<a href="' + esc(v.bill_url) + '" target="_blank" rel="noopener"><img src="' + esc(v.bill_url) + '" alt="utility bill" style="max-width:100%;border-radius:8px;margin:8px 0;display:block;"></a>'
+          : '<p class="err">Bill image unavailable.</p>'}
+        <div>
+          <button class="btn approve-btn">Approve</button>
+          <button class="btn ghost reject-btn">Reject</button>
+        </div>
+        <span class="msg"></span>
+      </div>`).join("");
+    list.querySelectorAll(".card").forEach(card => {
+      card.querySelector(".approve-btn").addEventListener("click", () => decideVer(card, "approve"));
+      card.querySelector(".reject-btn").addEventListener("click", () => decideVer(card, "reject"));
+    });
+  } catch(e) { list.innerHTML = '<p class="msg err">' + esc(e.message) + '</p>'; }
+}
+
+async function decideVer(card, decision) {
+  const msg = card.querySelector(".msg");
+  msg.textContent = decision === "approve" ? "Approving…" : "Rejecting…"; msg.className = "msg";
+  try {
+    await api("/api/admin/verifications/" + card.dataset.id, {method:"POST", body:JSON.stringify({decision})});
+    card.remove();
+  } catch(e) { msg.textContent = e.message; msg.className = "msg err"; }
+}
+
+document.getElementById("refresh-ver").addEventListener("click", loadVerifications);
+
 load();
 </script>
 </body>
@@ -506,6 +546,25 @@ def _is_jwt(token):
     return bool(token) and token.count(".") == 2
 
 
+def _auth_headers(env, bearer=None):
+    """Supabase apikey/Authorization headers for a given key. Legacy JWT keys
+    (anon, service_role, user sessions) go in Authorization: Bearer; the newer
+    sb_publishable_/sb_secret_ keys go in apikey only. Shared by the PostgREST
+    and Storage APIs."""
+    anon = get_supabase_anon_key(env)
+    headers = {}
+    if bearer and not _is_jwt(bearer):
+        headers["apikey"] = bearer
+    elif bearer:
+        headers["apikey"] = anon or bearer
+        headers["Authorization"] = f"Bearer {bearer}"
+    else:
+        headers["apikey"] = anon
+        if _is_jwt(anon):
+            headers["Authorization"] = f"Bearer {anon}"
+    return headers
+
+
 class SupabaseError(Exception):
     def __init__(self, status, message):
         super().__init__(message)
@@ -518,25 +577,7 @@ def _supabase_request(env, method, path, *, params=None, body=None, bearer=None,
         raise SupabaseError(503, "Supabase URL not configured")
     query = f"?{urlencode(params)}" if params else ""
     url = f"{base}{path}{query}"
-    # Supabase keys come in two shapes. Legacy anon/service_role keys are JWTs
-    # and go in Authorization: Bearer. The newer sb_publishable_/sb_secret_ keys
-    # are NOT JWTs and must go in the apikey header ONLY -- putting one in
-    # Authorization makes PostgREST try to JWT-decode it and reject the request
-    # ("Expected 3 parts in JWT; got 1").
-    anon = get_supabase_anon_key(env)
-    headers = {"Content-Type": "application/json"}
-    if bearer and not _is_jwt(bearer):
-        # New-format key (e.g. a sb_secret_ service key): apikey only.
-        headers["apikey"] = bearer
-    elif bearer:
-        # A JWT: a user session token, or a legacy service_role key.
-        headers["apikey"] = anon or bearer
-        headers["Authorization"] = f"Bearer {bearer}"
-    else:
-        # No caller key -> default project (anon/publishable) access.
-        headers["apikey"] = anon
-        if _is_jwt(anon):
-            headers["Authorization"] = f"Bearer {anon}"
+    headers = {"Content-Type": "application/json", **_auth_headers(env, bearer)}
     if prefer:
         headers["Prefer"] = prefer
     data = json.dumps(body).encode() if body is not None else None
@@ -578,6 +619,66 @@ def supabase_update(env, table, params, fields, bearer=None):
         env, "PATCH", f"/rest/v1/{table}", params=params, body=fields, bearer=bearer,
         prefer="return=representation",
     ) or []
+
+
+# ---------------------------------------------------------------------------
+# Storage: private utility-bill bucket. All operations run server-side with the
+# service role; the bucket is private and never exposed to the browser.
+# ---------------------------------------------------------------------------
+BILLS_BUCKET = "bills"
+ALLOWED_BILL_TYPES = {
+    "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png",
+    "image/webp": "webp", "application/pdf": "pdf",
+}
+MAX_BILL_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+def storage_upload(env, path, data_bytes, content_type):
+    base = supabase_url(env)
+    if not base:
+        raise SupabaseError(503, "Supabase URL not configured")
+    headers = _auth_headers(env, service_role_key(env))
+    headers["Content-Type"] = content_type
+    headers["x-upsert"] = "true"
+    url = f"{base}/storage/v1/object/{BILLS_BUCKET}/{path}"
+    req = Request(url, data=data_bytes, headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=20) as resp:
+            raw = resp.read()
+            return json.loads(raw.decode()) if raw else None
+    except HTTPError as exc:
+        raise SupabaseError(exc.code, exc.read().decode(errors="replace")) from exc
+
+
+def storage_delete(env, path):
+    base = supabase_url(env)
+    if not base:
+        return
+    headers = _auth_headers(env, service_role_key(env))
+    url = f"{base}/storage/v1/object/{BILLS_BUCKET}/{path}"
+    req = Request(url, headers=headers, method="DELETE")
+    try:
+        with urlopen(req, timeout=10) as resp:
+            resp.read()
+    except HTTPError:
+        pass  # best-effort cleanup
+
+
+def storage_signed_url(env, path, expires_in=120):
+    """Short-lived signed URL for the admin to view a private bill."""
+    base = supabase_url(env)
+    if not base:
+        raise SupabaseError(503, "Supabase URL not configured")
+    headers = {"Content-Type": "application/json", **_auth_headers(env, service_role_key(env))}
+    url = f"{base}/storage/v1/object/sign/{BILLS_BUCKET}/{path}"
+    req = Request(url, data=json.dumps({"expiresIn": expires_in}).encode(), headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode() or "{}")
+    except HTTPError as exc:
+        raise SupabaseError(exc.code, exc.read().decode(errors="replace")) from exc
+    signed = payload.get("signedURL") or payload.get("signedUrl") or ""
+    return f"{base}/storage/v1{signed}" if signed else ""
 
 
 # ---------------------------------------------------------------------------
@@ -1340,6 +1441,9 @@ class RequestHandlerMixin:
         if path == "/api/admin/properties":
             self.handle_admin_list_properties()
             return
+        if path == "/api/admin/verifications":
+            self.handle_admin_list_verifications()
+            return
         if path.startswith("/api/properties/"):
             property_id = path.split("/")[-1]
             self.handle_get_property(property_id)
@@ -1359,6 +1463,12 @@ class RequestHandlerMixin:
             return
         if path.startswith("/api/admin/properties/"):
             self.handle_admin_update_property(path.split("/")[-1])
+            return
+        if path == "/api/verifications":
+            self.handle_create_verification()
+            return
+        if path.startswith("/api/admin/verifications/"):
+            self.handle_admin_decide_verification(path.split("/")[-1])
             return
         if path == "/api/properties/new/reviews":
             self.handle_create_review(None)
@@ -1683,6 +1793,91 @@ class RequestHandlerMixin:
         invalidate_registered_cache()
         self.send_json({"property": created}, HTTPStatus.CREATED)
 
+    def handle_admin_list_verifications(self):
+        if not self._require_admin():
+            return
+        env = read_env()
+        svc = service_role_key(env)
+        try:
+            rows = supabase_select(env, "bill_verifications", {
+                "select": "id,review_id,submitted_note,evidence_path,created_at,properties(name,area,city)",
+                "status": "eq.pending",
+                "order":  "created_at.asc",
+            }, bearer=svc)
+        except SupabaseError as exc:
+            self.send_error_json(f"Failed to load submissions: {exc}", HTTPStatus.BAD_GATEWAY)
+            return
+        out = []
+        for r in rows or []:
+            prop = r.get("properties") or {}
+            try:
+                bill_url = storage_signed_url(env, r.get("evidence_path"))
+            except SupabaseError:
+                bill_url = ""
+            out.append({
+                "id":            r.get("id"),
+                "property_name": prop.get("name"),
+                "property_area": prop.get("area"),
+                "note":          r.get("submitted_note"),
+                "created_at":    r.get("created_at"),
+                "bill_url":      bill_url,
+            })
+        self.send_json({"verifications": out})
+
+    def handle_admin_decide_verification(self, verification_id):
+        admin = self._require_admin()
+        if not admin:
+            return
+        try:
+            verification_id = str(uuid.UUID(verification_id))
+        except (ValueError, AttributeError):
+            self.send_error_json("Invalid id")
+            return
+        decision = clean_text(parse_body(self).get("decision"), 20).lower()
+        if decision not in ("approve", "reject"):
+            self.send_error_json("decision must be 'approve' or 'reject'")
+            return
+
+        env = read_env()
+        svc = service_role_key(env)
+        try:
+            rows = supabase_select(env, "bill_verifications",
+                {"id": f"eq.{verification_id}", "select": "*", "limit": "1"}, bearer=svc)
+        except SupabaseError as exc:
+            self.send_error_json(f"Lookup failed: {exc}", HTTPStatus.BAD_GATEWAY)
+            return
+        row = rows[0] if rows else None
+        if not row:
+            self.send_error_json("Not found", HTTPStatus.NOT_FOUND)
+            return
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if decision == "approve":
+            # Stamp verified_at on the reviewer's review(s) for this property.
+            if row.get("review_id"):
+                review_filter = {"id": f"eq.{row['review_id']}"}
+            else:
+                review_filter = {"user_id": f"eq.{row['user_id']}", "property_id": f"eq.{row['property_id']}"}
+            try:
+                supabase_update(env, "property_reviews", review_filter, {"verified_at": now_iso}, bearer=svc)
+            except SupabaseError as exc:
+                self.send_error_json(f"Could not mark review verified: {exc}", HTTPStatus.BAD_GATEWAY)
+                return
+        try:
+            supabase_update(env, "bill_verifications", {"id": f"eq.{verification_id}"}, {
+                "status":      "approved" if decision == "approve" else "rejected",
+                "reviewed_by": admin.get("id"),
+                "reviewed_at": now_iso,
+            }, bearer=svc)
+        except SupabaseError as exc:
+            self.send_error_json(f"Could not update submission: {exc}", HTTPStatus.BAD_GATEWAY)
+            return
+
+        # Delete the bill on decision, either way (PII: keep only the outcome).
+        if row.get("evidence_path"):
+            storage_delete(env, row["evidence_path"])
+        self.send_json({"ok": True, "status": "approved" if decision == "approve" else "rejected"})
+
     def _get_authenticated_user_id(self):
         """
         Returns the authenticated user_id string, or None if not signed in.
@@ -1957,6 +2152,77 @@ class RequestHandlerMixin:
 
         self.send_json(
             {"property": property_summary(env, created, bearer=access_token)},
+            HTTPStatus.CREATED,
+        )
+
+    def handle_create_verification(self):
+        """A resident uploads a utility bill to request 'verified' status.
+        File comes as base64 JSON, is validated + stored privately server-side,
+        and a pending bill_verifications row is created."""
+        user = self._resolve_session()
+        if not user:
+            self.send_error_json("Sign in to submit verification.", HTTPStatus.UNAUTHORIZED)
+            return
+        user_id = user.get("id")
+        body = parse_body(self)
+
+        try:
+            property_id = str(uuid.UUID(clean_text(body.get("property_id"), 80)))
+        except (ValueError, AttributeError):
+            self.send_error_json("A valid property is required.")
+            return
+        review_id = clean_text(body.get("review_id"), 80) or None
+        if review_id:
+            try:
+                review_id = str(uuid.UUID(review_id))
+            except (ValueError, AttributeError):
+                review_id = None
+
+        content_type = clean_text(body.get("content_type"), 80).lower()
+        ext = ALLOWED_BILL_TYPES.get(content_type)
+        if not ext:
+            self.send_error_json("Upload a JPEG, PNG, WEBP or PDF.")
+            return
+
+        data_b64 = body.get("data_base64") or ""
+        if "," in data_b64:  # tolerate a data: URL prefix
+            data_b64 = data_b64.split(",", 1)[1]
+        try:
+            data_bytes = base64.b64decode(data_b64, validate=True)
+        except Exception:
+            self.send_error_json("Could not read the uploaded file.")
+            return
+        if not data_bytes:
+            self.send_error_json("The file is empty.")
+            return
+        if len(data_bytes) > MAX_BILL_BYTES:
+            self.send_error_json("File is too large (max 5 MB).")
+            return
+
+        env = read_env()
+        access_token, _ = parse_session_cookie(self)
+        path = f"{user_id}/{uuid.uuid4().hex}.{ext}"
+        try:
+            storage_upload(env, path, data_bytes, content_type)
+        except SupabaseError as exc:
+            self.send_error_json(f"Could not store the file: {exc}", HTTPStatus.BAD_GATEWAY)
+            return
+
+        row = {
+            "user_id":        user_id,
+            "property_id":    property_id,
+            "review_id":      review_id,
+            "evidence_path":  path,
+            "submitted_note": clean_text(body.get("note"), 240) or None,
+        }
+        try:
+            created = supabase_insert(env, "bill_verifications", row, bearer=access_token)
+        except SupabaseError as exc:
+            storage_delete(env, path)  # don't orphan the file if the row fails
+            self.send_error_json(f"Could not record the submission: {exc}", HTTPStatus.BAD_GATEWAY)
+            return
+        self.send_json(
+            {"verification": {"id": created.get("id") if created else None, "status": "pending"}},
             HTTPStatus.CREATED,
         )
 

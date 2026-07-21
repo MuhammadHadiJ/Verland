@@ -1053,11 +1053,18 @@ function openReviewPopup(propertyId) {
   const periodInput = form.querySelector("#periodInput");
   const periodMark  = form.querySelector("#periodRequiredMark");
 
+  const verifySection = form.querySelector("#verifySection");
   roleSelect.addEventListener("change", () => {
     const requires = PERIOD_REQUIRED_ROLES.has(roleSelect.value);
     periodInput.required    = requires;
     periodInput.placeholder = requires ? "e.g. 2023–2025 (required)" : "e.g. 2023–2025 (optional)";
     periodMark.textContent  = requires ? "*" : "";
+    // Only people claiming lived experience (resident/owner) can verify.
+    if (verifySection) {
+      const eligible = /resident|owner|landlord/i.test(roleSelect.value);
+      verifySection.hidden = !eligible;
+      if (!eligible) form.querySelector("#billInput").value = "";
+    }
   });
 
   if (confirmDialog.open) confirmDialog.close();
@@ -1065,12 +1072,24 @@ function openReviewPopup(propertyId) {
   updateBodyScrollLock();
 }
 
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload  = () => resolve(r.result);
+    r.onerror = () => reject(new Error("Could not read the file."));
+    r.readAsDataURL(file);
+  });
+}
+
 async function handleReviewSubmit(event, propertyId) {
   event.preventDefault();
   const form    = event.target;
   const error   = form.querySelector(".form-error");
   error.textContent = "";
-  const payload = Object.fromEntries(new FormData(form).entries());
+  const billFile    = form.querySelector("#billInput")?.files?.[0] || null;
+  const payload     = Object.fromEntries(new FormData(form).entries());
+  delete payload.bill;  // the file is uploaded separately, not part of the review JSON
+  const wantsVerify = billFile && /resident|owner|landlord/i.test(payload.contributor_role || "");
 
   const allReviewFields = [...propertySpecificFields, ...neighborhoodFields].map(([f]) => f);
   const unselected      = allReviewFields.filter(f => !payload[f]);
@@ -1122,6 +1141,22 @@ async function handleReviewSubmit(event, propertyId) {
     } else {
       state.properties = state.properties.map((p) => p.id === propertyId ? savedProperty : p);
       renderDetail();
+    }
+
+    // Optional residency verification: the review is already saved, so a failed
+    // bill upload never loses the review — it just doesn't earn the badge.
+    if (wantsVerify) {
+      const propId = propertyId || (savedProperty && savedProperty.id);
+      try {
+        const dataUrl = await readFileAsDataURL(billFile);
+        await api("/api/verifications", { method: "POST", body: JSON.stringify({
+          property_id:  propId,
+          content_type: billFile.type,
+          data_base64:  dataUrl,
+        }) });
+      } catch (verr) {
+        alert("Your review was saved, but the verification bill didn't upload: " + verr.message);
+      }
     }
   } catch (apiError) {
     if (apiError.message.includes("Sign in")) {
@@ -1183,6 +1218,12 @@ function renderReviewForm(propertyId) {
         Optional comment
         <textarea name="comment" placeholder="Keep it specific and factual"></textarea>
       </label>
+
+      <div class="review-section" id="verifySection" hidden>
+        <h4>Verify your residency <span style="opacity:.55;font-weight:400;font-size:.85em">optional</span></h4>
+        <p style="margin:.2em 0 .6em;opacity:.75;font-size:.85rem">Upload a utility bill showing your name at this address to earn a "Verified resident" badge. Private — only the moderator sees it, and it's deleted after review.</p>
+        <input type="file" name="bill" id="billInput" accept="image/jpeg,image/png,image/webp,application/pdf">
+      </div>
 
       <p class="form-error"></p>
       <div class="review-submit-row">
