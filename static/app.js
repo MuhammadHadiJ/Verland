@@ -921,9 +921,11 @@ function renderComments(property) {
       <div class="comment-header">
         <span class="comment-avatar" aria-hidden="true">${escapeHtml(getInitials(comment.reviewer_name))}</span>
         <div class="comment-who">
-          <strong class="comment-reviewer">${escapeHtml(comment.reviewer_name)}</strong>
+          <span class="comment-name-line">
+            <strong class="comment-reviewer">${escapeHtml(comment.reviewer_name)}</strong>
+            ${comment.verified_at ? VERIFIED_BADGE : ""}
+          </span>
           ${comment.lived_period ? `<span class="comment-sub">Lived here ${escapeHtml(comment.lived_period)}</span>` : ""}
-          ${comment.verified_at ? VERIFIED_BADGE : ""}
         </div>
         <span class="comment-role-badge"${isResident ? "" : ` data-tone="neutral"`}>${escapeHtml(comment.contributor_role)}</span>
         <div class="comment-meta-right">
