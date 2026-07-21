@@ -528,3 +528,16 @@ begin
   end if;
 end
 $$;
+
+-- Grants for the trusted backend role. This project originally granted only
+-- anon/authenticated (the app never used service_role), so admin operations
+-- performed via the service-role/sb_secret key hit "permission denied" until
+-- these were added. service_role bypasses RLS and is only reachable via the
+-- secret key server-side, so full access here is the standard Supabase setup.
+grant usage on schema public to service_role;
+grant all on all tables in schema public to service_role;
+grant all on all sequences in schema public to service_role;
+grant all on all functions in schema public to service_role;
+alter default privileges in schema public grant all on tables to service_role;
+alter default privileges in schema public grant all on sequences to service_role;
+alter default privileges in schema public grant all on functions to service_role;

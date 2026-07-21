@@ -277,7 +277,21 @@ ADMIN_PAGE_HTML = """<!doctype html>
          background:#0f2e22; color:#f4f1ea; padding:24px; }
   a { color:#7fd1a3; }
   h1 { margin:0 0 4px; font-size:1.6rem; }
-  .sub { opacity:.7; margin:0 0 24px; font-size:.9rem; }
+  .sub { opacity:.7; margin:0 0 20px; font-size:.9rem; }
+
+  .tabs { display:flex; gap:4px; border-bottom:1px solid rgba(255,255,255,.12); margin-bottom:20px; }
+  .tab { appearance:none; border:0; background:transparent; color:#f4f1ea; opacity:.6;
+         padding:10px 18px; font-size:.95rem; font-weight:600; cursor:pointer;
+         border-bottom:2px solid transparent; margin-bottom:-1px; border-radius:8px 8px 0 0; }
+  .tab:hover { opacity:.85; }
+  .tab.active { opacity:1; border-bottom-color:#2ea36a; background:rgba(46,163,106,.10); }
+
+  .panel { display:none; }
+  .panel.active { display:block; }
+
+  .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:16px; max-width:760px; flex-wrap:wrap; }
+  .toolbar .search { flex:1; min-width:200px; }
+
   .card { background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1);
           border-radius:12px; padding:16px; margin-bottom:16px; max-width:760px; }
   h2 { font-size:1rem; margin:0 0 12px; letter-spacing:.02em; }
@@ -286,31 +300,53 @@ ADMIN_PAGE_HTML = """<!doctype html>
   input { width:100%; padding:8px 10px; border-radius:8px; border:1px solid rgba(255,255,255,.15);
           background:rgba(0,0,0,.25); color:#f4f1ea; font-size:.95rem; }
   .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  button { margin-top:12px; padding:8px 16px; border:0; border-radius:999px; cursor:pointer;
-           background:#1f7a4d; color:#fff; font-weight:600; font-size:.9rem; }
-  button.ghost { background:transparent; border:1px solid rgba(255,255,255,.25); color:#f4f1ea; }
+  .btn { margin-top:12px; padding:8px 16px; border:0; border-radius:999px; cursor:pointer;
+         background:#1f7a4d; color:#fff; font-weight:600; font-size:.9rem; }
+  .btn.ghost { background:transparent; border:1px solid rgba(255,255,255,.25); color:#f4f1ea; margin-top:0; }
   .msg { font-size:.85rem; margin-top:8px; min-height:1.1em; }
   .ok { color:#7fd1a3; } .err { color:#ff9b8a; }
   .prop-name { font-weight:600; margin-bottom:6px; }
+  .empty { opacity:.6; font-size:.9rem; }
+  #add-form { display:none; }
+  #add-form.show { display:block; }
 </style>
 </head>
 <body>
   <h1>Verland Admin</h1>
-  <p class="sub">You're a mod. Edit a property's name &amp; address, or add an empty one. <a href="/">&larr; Back to site</a></p>
+  <p class="sub">You're a mod. <a href="/">&larr; Back to site</a></p>
 
-  <div class="card">
-    <h2>Add a property</h2>
-    <label>Name</label>
-    <input id="new-name" placeholder="e.g. Al Asr Home">
-    <div class="row">
-      <div><label>Address</label><input id="new-address" placeholder="e.g. PECHS Block 3, Karachi"></div>
-      <div><label>City</label><input id="new-city" value="Karachi"></div>
-    </div>
-    <button id="create-btn">Create empty property</button>
-    <div class="msg" id="create-msg"></div>
+  <div class="tabs">
+    <button class="tab active" data-tab="properties">Properties</button>
+    <button class="tab" data-tab="verified">Verified users</button>
   </div>
 
-  <div id="list"></div>
+  <section class="panel active" id="panel-properties">
+    <div class="toolbar">
+      <button class="btn ghost" id="add-toggle">+ Add property</button>
+      <input class="search" id="search" placeholder="Search your properties by name or address…">
+    </div>
+
+    <div class="card" id="add-form">
+      <h2>Add a property</h2>
+      <label>Name</label>
+      <input id="new-name" placeholder="e.g. Al Asr Home">
+      <div class="row">
+        <div><label>Address</label><input id="new-address" placeholder="e.g. PECHS Block 3, Karachi"></div>
+        <div><label>City</label><input id="new-city" value="Karachi"></div>
+      </div>
+      <button class="btn" id="create-btn">Create empty property</button>
+      <div class="msg" id="create-msg"></div>
+    </div>
+
+    <div id="list"></div>
+  </section>
+
+  <section class="panel" id="panel-verified">
+    <div class="card">
+      <h2>Verified users</h2>
+      <p class="empty">Coming next — this is where you'll review utility-bill submissions and approve "Verified resident" badges.</p>
+    </div>
+  </section>
 
 <script>
 const api = (url, opts={}) => fetch(url, {credentials:"same-origin", headers:{"Content-Type":"application/json"}, ...opts}).then(async r => {
@@ -320,29 +356,56 @@ const api = (url, opts={}) => fetch(url, {credentials:"same-origin", headers:{"C
 });
 const esc = s => (s==null ? "" : String(s).replace(/"/g,"&quot;"));
 
-async function load() {
+// Tab switching
+document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x === t));
+  document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === "panel-" + t.dataset.tab));
+}));
+
+// Reveal / hide the add-property form
+document.getElementById("add-toggle").addEventListener("click", () => {
+  document.getElementById("add-form").classList.toggle("show");
+});
+
+let allProps = [];
+
+function renderList(filter) {
   const list = document.getElementById("list");
+  const f = (filter || "").trim().toLowerCase();
+  if (!allProps.length) { list.innerHTML = '<p class="empty">No properties yet.</p>'; return; }
+  const rows = allProps.filter(p => !f ||
+    (p.name || "").toLowerCase().includes(f) ||
+    (p.address || "").toLowerCase().includes(f) ||
+    (p.area || "").toLowerCase().includes(f) ||
+    (p.city || "").toLowerCase().includes(f));
+  if (!rows.length) { list.innerHTML = '<p class="empty">No matches for &quot;' + esc(filter) + '&quot;.</p>'; return; }
+  list.innerHTML = rows.map(p => `
+    <div class="card" data-id="${esc(p.id)}">
+      <div class="prop-name">${esc(p.name)}</div>
+      <div class="row">
+        <div><label>Name</label><input data-f="name" value="${esc(p.name)}"></div>
+        <div><label>City</label><input data-f="city" value="${esc(p.city)}"></div>
+      </div>
+      <div class="row">
+        <div><label>Address</label><input data-f="address" value="${esc(p.address)}"></div>
+        <div><label>Area</label><input data-f="area" value="${esc(p.area)}"></div>
+      </div>
+      <button class="btn ghost save-btn">Save</button>
+      <span class="msg"></span>
+    </div>`).join("");
+  list.querySelectorAll(".card").forEach(card => {
+    card.querySelector(".save-btn").addEventListener("click", () => save(card));
+  });
+}
+
+async function load() {
   try {
     const {properties} = await api("/api/admin/properties");
-    if (!properties.length) { list.innerHTML = '<p class="sub">No properties yet.</p>'; return; }
-    list.innerHTML = properties.map(p => `
-      <div class="card" data-id="${esc(p.id)}">
-        <div class="prop-name">${esc(p.name)}</div>
-        <div class="row">
-          <div><label>Name</label><input data-f="name" value="${esc(p.name)}"></div>
-          <div><label>City</label><input data-f="city" value="${esc(p.city)}"></div>
-        </div>
-        <div class="row">
-          <div><label>Address</label><input data-f="address" value="${esc(p.address)}"></div>
-          <div><label>Area</label><input data-f="area" value="${esc(p.area)}"></div>
-        </div>
-        <button class="ghost save-btn">Save</button>
-        <span class="msg"></span>
-      </div>`).join("");
-    list.querySelectorAll(".card").forEach(card => {
-      card.querySelector(".save-btn").addEventListener("click", () => save(card));
-    });
-  } catch(e) { list.innerHTML = '<p class="msg err">'+esc(e.message)+'</p>'; }
+    allProps = properties || [];
+    renderList(document.getElementById("search").value);
+  } catch(e) {
+    document.getElementById("list").innerHTML = '<p class="msg err">' + esc(e.message) + '</p>';
+  }
 }
 
 async function save(card) {
@@ -352,10 +415,14 @@ async function save(card) {
   const msg = card.querySelector(".msg");
   msg.textContent = "Saving…"; msg.className = "msg";
   try {
-    await api("/api/admin/properties/"+id, {method:"POST", body:JSON.stringify(body)});
+    await api("/api/admin/properties/" + id, {method:"POST", body:JSON.stringify(body)});
     msg.textContent = "Saved."; msg.className = "msg ok";
+    const p = allProps.find(x => x.id === id);  // keep local copy in sync so search still matches
+    if (p) Object.assign(p, body);
   } catch(e) { msg.textContent = e.message; msg.className = "msg err"; }
 }
+
+document.getElementById("search").addEventListener("input", e => renderList(e.target.value));
 
 document.getElementById("create-btn").addEventListener("click", async () => {
   const msg = document.getElementById("create-msg");
